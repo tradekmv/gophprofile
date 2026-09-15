@@ -1,0 +1,35 @@
+# Binaries
+/bin/
+/server
+/worker
+/migrate
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage.out
+coverage.html
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local build / cache artifacts
+.gocache/
+
+# Tooling state (not part of the project)
+.playwright-mcp/
+.thclaws/
