@@ -102,6 +102,18 @@ func (f *fakeRepo) SoftDelete(_ context.Context, id uuid.UUID) error {
 	}
 	return repository.ErrNotFound
 }
+func (f *fakeRepo) SoftDeleteAllByUserID(_ context.Context, uid string) ([]*domain.Avatar, error) {
+	var out []*domain.Avatar
+	now := time.Now()
+	for _, a := range f.items {
+		if a.UserID == uid && a.DeletedAt == nil {
+			a.DeletedAt = &now
+			cp := *a
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
 
 // fakeStorage records uploads/downloads/deletes in memory.
 type fakeStorage struct {
@@ -291,6 +303,35 @@ func TestDeleteSuccess(t *testing.T) {
 	require.Len(t, pub.deletes, 1)
 	require.Equal(t, res.Avatar.ID.String(), pub.deletes[0].AvatarID)
 	require.Contains(t, pub.deletes[0].S3Keys, res.Avatar.S3Key)
+}
+
+func TestDeleteAllByUserID(t *testing.T) {
+	t.Parallel()
+	svc, repo, _, pub := newSvc(t)
+
+	// Загружаем две аватарки для user-1 и одну для user-2.
+	res1, err := svc.Upload(context.Background(), "user-1", bytes.NewReader(validJPEG()), "a.jpg", int64(len(validJPEG())))
+	require.NoError(t, err)
+	res2, err := svc.Upload(context.Background(), "user-1", bytes.NewReader(validJPEG()), "b.jpg", int64(len(validJPEG())))
+	require.NoError(t, err)
+	other, err := svc.Upload(context.Background(), "user-2", bytes.NewReader(validJPEG()), "c.jpg", int64(len(validJPEG())))
+	require.NoError(t, err)
+
+	pub.deletes = nil
+	n, err := svc.DeleteAllByUserID(context.Background(), "user-1")
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	// Обе аватарки user-1 помечены удалёнными.
+	a1, _ := repo.GetByID(context.Background(), res1.Avatar.ID)
+	a2, _ := repo.GetByID(context.Background(), res2.Avatar.ID)
+	require.NotNil(t, a1.DeletedAt)
+	require.NotNil(t, a2.DeletedAt)
+	// user-2 не тронут.
+	aO, _ := repo.GetByID(context.Background(), other.Avatar.ID)
+	require.Nil(t, aO.DeletedAt)
+	// Опубликовано 2 delete-события.
+	require.Len(t, pub.deletes, 2)
 }
 
 func TestParseThumbnailSizes(t *testing.T) {

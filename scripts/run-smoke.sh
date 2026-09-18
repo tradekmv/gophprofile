@@ -8,6 +8,7 @@ cd "$ROOT"
 
 # Common env
 export DATABASE_DSN="postgres://app:app@localhost:5432/gophprofile?sslmode=disable"
+export POSTGRES_PASSWORD="app"
 export S3_ENDPOINT="http://localhost:9000"
 export S3_REGION="us-east-1"
 export S3_BUCKET="avatars"

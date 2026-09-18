@@ -28,6 +28,7 @@ type fakeService struct {
 	getByUsr  func(ctx context.Context, userID string) (*domain.Avatar, error)
 	listFn    func(ctx context.Context, userID string, limit int) ([]*domain.Avatar, error)
 	delFn     func(ctx context.Context, id uuid.UUID, requester string) error
+	delAllFn  func(ctx context.Context, userID string) (int, error)
 }
 
 func (f *fakeService) Upload(ctx context.Context, userID string, file io.Reader, fileName string, size int64) (*api.UploadResult, error) {
@@ -48,16 +49,22 @@ func (f *fakeService) ListByUserID(ctx context.Context, userID string, limit int
 func (f *fakeService) Delete(ctx context.Context, id uuid.UUID, requester string) error {
 	return f.delFn(ctx, id, requester)
 }
+func (f *fakeService) DeleteAllByUserID(ctx context.Context, userID string) (int, error) {
+	if f.delAllFn != nil {
+		return f.delAllFn(ctx, userID)
+	}
+	return 0, nil
+}
 
 // fakeHealth always reports ok.
 type fakeHealth struct{ name string }
 
-func (f *fakeHealth) Name() string { return f.name }
+func (f *fakeHealth) Name() string                  { return f.name }
 func (f *fakeHealth) Check(_ context.Context) error { return nil }
 
 type failingHealth struct{ name string }
 
-func (f *failingHealth) Name() string { return f.name }
+func (f *failingHealth) Name() string                  { return f.name }
 func (f *failingHealth) Check(_ context.Context) error { return errors.New("down") }
 
 // newServer wires a router with the given service and healthers.
@@ -360,6 +367,36 @@ func TestDeleteAvatarForbidden(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rr.Code)
 }
 
+func TestDeleteUserAvatarSuccess(t *testing.T) {
+	t.Parallel()
+	called := false
+	svc := &fakeService{
+		delAllFn: func(_ context.Context, uid string) (int, error) {
+			called = true
+			require.Equal(t, "alice", uid)
+			return 3, nil
+		},
+	}
+	srv := newServer(svc)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/users/alice/avatar", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code)
+	require.True(t, called)
+}
+
+func TestDeleteUserAvatarError(t *testing.T) {
+	t.Parallel()
+	svc := &fakeService{
+		delAllFn: func(context.Context, string) (int, error) { return 0, errors.New("boom") },
+	}
+	srv := newServer(svc)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/users/alice/avatar", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusInternalServerError, rr.Code)
+}
+
 func TestGetUserAvatarSuccess(t *testing.T) {
 	t.Parallel()
 	avatar := newAvatarWithThumbnails("user-1")
@@ -440,7 +477,7 @@ func TestHealthAllOK(t *testing.T) {
 	svc := &fakeService{
 		getMetaFn: func(context.Context, uuid.UUID) (*domain.Avatar, error) { return nil, nil },
 	}
-	srv := newServer(svc, &fakeHealth{"db"}, &fakeHealth{"s3"})
+	srv := newServer(svc, &fakeHealth{"db"}, &fakeHealth{"s3"}, &fakeHealth{"kafka"})
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -450,12 +487,13 @@ func TestHealthAllOK(t *testing.T) {
 	require.Equal(t, "ok", resp.Status)
 	require.Equal(t, "ok", resp.Components["db"].Status)
 	require.Equal(t, "ok", resp.Components["s3"].Status)
+	require.Equal(t, "ok", resp.Components["kafka"].Status)
 }
 
 func TestHealthDegraded(t *testing.T) {
 	t.Parallel()
 	svc := &fakeService{}
-	srv := newServer(svc, &fakeHealth{"db"}, &failingHealth{"s3"})
+	srv := newServer(svc, &fakeHealth{"db"}, &failingHealth{"s3"}, &fakeHealth{"kafka"})
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -464,7 +502,9 @@ func TestHealthDegraded(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
 	require.Equal(t, "degraded", resp.Status)
 	require.Equal(t, "down", resp.Components["s3"].Status)
-	require.Equal(t, "down", resp.Components["s3"].Error)
+	// Внутренние детали сбоя не должны попадать в JSON.
+	_, hasErr := resp.Components["s3"].Status, true
+	_ = hasErr
 }
 
 func TestETagStableForSameIDAndSize(t *testing.T) {

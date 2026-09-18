@@ -21,6 +21,7 @@ type AvatarService interface {
 	GetByUserID(ctx context.Context, userID string) (*domain.Avatar, error)
 	ListByUserID(ctx context.Context, userID string, limit int) ([]*domain.Avatar, error)
 	Delete(ctx context.Context, id uuid.UUID, requesterUserID string) error
+	DeleteAllByUserID(ctx context.Context, userID string) (int, error)
 }
 
 // UploadResult — алиас services.UploadResult.

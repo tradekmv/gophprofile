@@ -88,6 +88,9 @@ func run() error {
 				}
 				return nil
 			}},
+			kafkaHealth{ping: func(ctx context.Context) error {
+				return pingKafka(ctx, cfg.KafkaBrokers)
+			}},
 		},
 	}
 	router := api.Router(hs, cfg.WebDir, cfg.MaxUploadSize)
@@ -117,19 +120,3 @@ func run() error {
 	logger.L().Info().Msg("server stopped")
 	return nil
 }
-
-// dbHealth пингует Postgres pool.
-type dbHealth struct {
-	ping func(ctx context.Context) error
-}
-
-func (h dbHealth) Name() string                    { return "db" }
-func (h dbHealth) Check(ctx context.Context) error { return h.ping(ctx) }
-
-// storageHealth пробует S3 запросом несуществующего ключа.
-type storageHealth struct {
-	ping func(ctx context.Context) error
-}
-
-func (h storageHealth) Name() string                    { return "s3" }
-func (h storageHealth) Check(ctx context.Context) error { return h.ping(ctx) }

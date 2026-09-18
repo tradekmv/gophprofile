@@ -10,7 +10,6 @@ import (
 	"github.com/IBM/sarama"
 
 	"github.com/tradekmv/gophprofile/internal/domain"
-	"github.com/tradekmv/gophprofile/pkg/logger"
 )
 
 // Publisher — интерфейс публикации событий (для тестов).
@@ -110,23 +109,15 @@ func (p *SaramaPublisher) publish(ctx context.Context, eventType string, message
 }
 
 // PublishUpload отправляет AvatarUploaded с ключом = avatar_id.
+// Логирование ошибок — на стороне вызывающего (services), здесь только
+// пробрасываем err.
 func (p *SaramaPublisher) PublishUpload(ctx context.Context, event domain.AvatarUploadEvent) error {
-	if err := p.publish(ctx, domain.EventTypeUpload, event.AvatarID, event.AvatarID, event); err != nil {
-		logger.L().Error().Err(err).Str("avatar_id", event.AvatarID).Msg("publish upload event failed")
-		return err
-	}
-	logger.L().Debug().Str("avatar_id", event.AvatarID).Msg("upload event published")
-	return nil
+	return p.publish(ctx, domain.EventTypeUpload, event.AvatarID, event.AvatarID, event)
 }
 
 // PublishDelete отправляет AvatarDeleted.
 func (p *SaramaPublisher) PublishDelete(ctx context.Context, event domain.AvatarDeleteEvent) error {
-	if err := p.publish(ctx, domain.EventTypeDelete, event.AvatarID, event.AvatarID, event); err != nil {
-		logger.L().Error().Err(err).Str("avatar_id", event.AvatarID).Msg("publish delete event failed")
-		return err
-	}
-	logger.L().Debug().Str("avatar_id", event.AvatarID).Msg("delete event published")
-	return nil
+	return p.publish(ctx, domain.EventTypeDelete, event.AvatarID, event.AvatarID, event)
 }
 
 // Close флашит сообщения и закрывает producer.

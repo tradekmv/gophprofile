@@ -60,17 +60,17 @@ func TestAs(t *testing.T) {
 		}
 	})
 
-	t.Run("generic error becomes internal", func(t *testing.T) {
+	t.Run("generic error becomes internal without leaking details", func(t *testing.T) {
 		t.Parallel()
-		got := As(errors.New("boom"))
+		got := As(errors.New("boom: internal secret"))
 		if got.Status != http.StatusInternalServerError {
 			t.Errorf("Status = %d, want 500", got.Status)
 		}
 		if got.Code != "internal_error" {
 			t.Errorf("Code = %q, want internal_error", got.Code)
 		}
-		if got.Details != "boom" {
-			t.Errorf("Details = %q, want boom", got.Details)
+		if got.Details != "" {
+			t.Errorf("Details = %q, want empty (must not leak internal error text)", got.Details)
 		}
 	})
 }

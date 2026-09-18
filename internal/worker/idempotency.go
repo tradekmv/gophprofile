@@ -34,18 +34,19 @@ func NewInMemoryProcessedStore(ttl time.Duration) *InMemoryProcessedStore {
 }
 
 // Seen возвращает true, если id уже помечен в TTL-окне.
+// Все операции чтения и (если нужна) эвикции — под одним Lock, чтобы не
+// потерять свежую запись, добавленную другой горутиной между RUnlock и Lock.
 func (s *InMemoryProcessedStore) Seen(id string) (bool, error) {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	last, ok := s.data[id]
-	s.mu.RUnlock()
 	if !ok {
 		return false, nil
 	}
 	if time.Since(last) > s.ttl {
-		// Ленивое удаление протухшей записи.
-		s.mu.Lock()
+		// Запись протухла — удаляем и считаем что не видели.
 		delete(s.data, id)
-		s.mu.Unlock()
 		return false, nil
 	}
 	return true, nil

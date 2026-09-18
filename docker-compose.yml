@@ -65,8 +65,10 @@ services:
       dockerfile: docker/Dockerfile.server
     entrypoint: ["/app/migrate"]
     command: ["up"]
+    env_file: .env
     environment:
-      DATABASE_DSN: postgres://app:app@postgres:5432/gophprofile?sslmode=disable
+      # DATABASE_DSN собирается из POSTGRES_* переменных в .env, если пусто.
+      DATABASE_DSN: ""
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,7 +109,7 @@ services:
       - "18080:8080"
     env_file: .env
     environment:
-      DATABASE_DSN: postgres://app:app@postgres:5432/gophprofile?sslmode=disable
+      # Все настройки берутся из env_file (.env). Ниже только overrides.
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_BASE_URL: http://localhost:9000/avatars
       KAFKA_BROKERS: kafka:9092

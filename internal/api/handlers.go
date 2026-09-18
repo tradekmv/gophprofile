@@ -239,6 +239,22 @@ func (h *Handlers) GetUserAvatar(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, body)
 }
 
+// DeleteUserAvatar — обработчик DELETE /api/v1/users/{user_id}/avatar.
+// Удаляет все аватарки пользователя (soft delete + события на очистку S3).
+// 204 при успехе независимо от того, были ли аватарки.
+func (h *Handlers) DeleteUserAvatar(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	if userID == "" {
+		writeError(w, r, httperr.WithDetails(httperr.ErrBadRequest, "user_id is required"))
+		return
+	}
+	if _, err := h.Service.DeleteAllByUserID(r.Context(), userID); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ListUserAvatars — обработчик GET /api/v1/users/{user_id}/avatars.
 func (h *Handlers) ListUserAvatars(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "user_id")
@@ -267,6 +283,9 @@ func (h *Handlers) ListUserAvatars(w http.ResponseWriter, r *http.Request) {
 }
 
 // Health — обработчик GET /health.
+// Внутренние детали сбоя (строка подключения, сетевые ошибки и т.п.) НЕ
+// отдаются клиенту: в JSON попадает только статус "down". Реальную ошибку
+// каждый HealthChecker должен логировать сам внутри Check.
 func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	resp := HealthResponse{Status: "ok", Components: make(map[string]ComponentHealth, len(h.Healthers))}
 	overallOK := true
@@ -274,7 +293,7 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 		c := ComponentHealth{Status: "ok"}
 		if err := hc.Check(r.Context()); err != nil {
 			c.Status = "down"
-			c.Error = err.Error()
+			// Намеренно не раскрываем err.Error() клиенту.
 			overallOK = false
 		}
 		resp.Components[hc.Name()] = c

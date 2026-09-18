@@ -19,7 +19,7 @@ import (
 // pgContainer spins up a Postgres container with pgcrypto enabled and a
 // fresh schema matching the 001_init migration.
 type pgContainer struct {
-	ctr *postgres.PostgresContainer
+	ctr  *postgres.PostgresContainer
 	pool *pgxpool.Pool
 	dsn  string
 }
@@ -50,6 +50,8 @@ func startPostgres(t *testing.T) *pgContainer {
 	// tests don't need a filesystem path).
 	schemaSQL := `
 		CREATE EXTENSION IF NOT EXISTS pgcrypto;
+		CREATE TYPE avatar_upload_status AS ENUM ('uploading', 'uploaded');
+		CREATE TYPE avatar_processing_status AS ENUM ('pending', 'processing', 'completed', 'failed');
 		CREATE TABLE IF NOT EXISTS avatars (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			user_id VARCHAR(255) NOT NULL,
@@ -58,8 +60,8 @@ func startPostgres(t *testing.T) *pgContainer {
 			size_bytes BIGINT NOT NULL,
 			s3_key VARCHAR(500) NOT NULL,
 			thumbnail_s3_keys JSONB,
-			upload_status VARCHAR(50) NOT NULL DEFAULT 'uploaded',
-			processing_status VARCHAR(50) NOT NULL DEFAULT 'pending',
+			upload_status avatar_upload_status NOT NULL DEFAULT 'uploaded',
+			processing_status avatar_processing_status NOT NULL DEFAULT 'pending',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			deleted_at TIMESTAMPTZ

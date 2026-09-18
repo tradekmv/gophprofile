@@ -35,6 +35,10 @@ var (
 )
 
 // WithDetails возвращает копию err с добавленными деталями.
+// Если err — это *Error, переданные details прикрепляются как есть.
+// Если err — неизвестная ошибка, она не интерпретируется как HTTP-ошибка;
+// вызывающий код должен сам построить подходящий *Error с нейтральным Details
+// (или оставить его пустым для 5xx, чтобы не раскрывать внутренние детали).
 func WithDetails(err error, details string) *Error {
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
@@ -42,10 +46,12 @@ func WithDetails(err error, details string) *Error {
 		clone.Details = details
 		return &clone
 	}
-	return &Error{Status: http.StatusInternalServerError, Code: "internal_error", Details: err.Error()}
+	return &Error{Status: http.StatusInternalServerError, Code: "internal_error"}
 }
 
-// As извлекает *Error из err, иначе возвращает внутреннюю ошибку.
+// As извлекает *Error из err, иначе возвращает внутреннюю ошибку без раскрытия
+// внутренних деталей клиенту. Для 5xx в Details попадает только нейтральный текст,
+// реальная ошибка должна логироваться вызывающим кодом.
 func As(err error) *Error {
 	if err == nil {
 		return nil
@@ -54,5 +60,5 @@ func As(err error) *Error {
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
-	return &Error{Status: http.StatusInternalServerError, Code: "internal_error", Details: err.Error()}
+	return &Error{Status: http.StatusInternalServerError, Code: "internal_error"}
 }

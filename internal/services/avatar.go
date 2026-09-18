@@ -56,24 +56,25 @@ type (
 )
 
 // AvatarService оркестрирует операции с аватарками.
+// Поля приватные — состояние объекта задаётся только через NewAvatarService.
 type AvatarService struct {
-	Repo           AvatarRepo
-	Storage        Storage
-	Publisher      broker.Publisher
-	BaseURL        string
-	ThumbnailSizes []ThumbnailSize
-	MaxUploadSize  int64
+	repo           AvatarRepo
+	storage        Storage
+	publisher      broker.Publisher
+	baseURL        string
+	thumbnailSizes []ThumbnailSize
+	maxUploadSize  int64
 }
 
 // NewAvatarService создаёт AvatarService.
 func NewAvatarService(repo AvatarRepo, storage Storage, pub broker.Publisher, baseURL string, sizes []ThumbnailSize, maxUpload int64) *AvatarService {
 	return &AvatarService{
-		Repo:           repo,
-		Storage:        storage,
-		Publisher:      pub,
-		BaseURL:        baseURL,
-		ThumbnailSizes: sizes,
-		MaxUploadSize:  maxUpload,
+		repo:           repo,
+		storage:        storage,
+		publisher:      pub,
+		baseURL:        baseURL,
+		thumbnailSizes: sizes,
+		maxUploadSize:  maxUpload,
 	}
 }
 
@@ -82,7 +83,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID string, file io.Reade
 	if userID == "" {
 		return nil, domain.ErrForbidden // нет пользователя — нет действия
 	}
-	if s.MaxUploadSize > 0 && size > s.MaxUploadSize {
+	if s.maxUploadSize > 0 && size > s.maxUploadSize {
 		return nil, errors.New("payload too large")
 	}
 	br := bufio.NewReader(file)
@@ -100,7 +101,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID string, file io.Reade
 		return nil, fmt.Errorf("read upload body: %w", err)
 	}
 
-	if err := s.Storage.UploadBytes(ctx, s3Key, bodyBytes, mime); err != nil {
+	if err := s.storage.UploadBytes(ctx, s3Key, bodyBytes, mime); err != nil {
 		return nil, fmt.Errorf("upload to storage: %w", err)
 	}
 
@@ -114,19 +115,19 @@ func (s *AvatarService) Upload(ctx context.Context, userID string, file io.Reade
 		UploadStatus:     domain.UploadStatusUploaded,
 		ProcessingStatus: domain.ProcessingStatusPending,
 	}
-	if err := s.Repo.Create(ctx, avatar); err != nil {
+	if err := s.repo.Create(ctx, avatar); err != nil {
 		// Если БД не сохранила — убираем файл из S3 (best-effort).
-		_ = s.Storage.Delete(ctx, s3Key)
+		_ = s.storage.Delete(ctx, s3Key)
 		return nil, fmt.Errorf("persist avatar: %w", err)
 	}
 
 	// Список операций для воркера.
-	ops := make([]domain.ProcessingOp, 0, len(s.ThumbnailSizes))
-	for _, sz := range s.ThumbnailSizes {
+	ops := make([]domain.ProcessingOp, 0, len(s.thumbnailSizes))
+	for _, sz := range s.thumbnailSizes {
 		ops = append(ops, domain.ProcessingOp{Type: "resize", Width: sz.Width, Height: sz.Height})
 	}
 
-	if err := s.Publisher.PublishUpload(ctx, domain.AvatarUploadEvent{
+	if err := s.publisher.PublishUpload(ctx, domain.AvatarUploadEvent{
 		AvatarID:     avatar.ID.String(),
 		UserID:       avatar.UserID,
 		S3Key:        avatar.S3Key,
@@ -141,14 +142,14 @@ func (s *AvatarService) Upload(ctx context.Context, userID string, file io.Reade
 
 	return &UploadResult{
 		Avatar:  avatar,
-		URL:     s.BaseURL + "/api/v1/avatars/" + avatar.ID.String(),
+		URL:     s.baseURL + "/api/v1/avatars/" + avatar.ID.String(),
 		Message: "avatar accepted; processing asynchronously",
 	}, nil
 }
 
 // GetMetadata возвращает метаданные не удалённой аватарки.
 func (s *AvatarService) GetMetadata(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
-	a, err := s.Repo.GetActiveByID(ctx, id)
+	a, err := s.repo.GetActiveByID(ctx, id)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, domain.ErrAvatarNotFound
 	}
@@ -157,7 +158,7 @@ func (s *AvatarService) GetMetadata(ctx context.Context, id uuid.UUID) (*domain.
 
 // GetBinary возвращает тело аватарки (или миниатюры). Только для активных аватарок.
 func (s *AvatarService) GetBinary(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, string, error) {
-	a, err := s.Repo.GetActiveByID(ctx, id)
+	a, err := s.repo.GetActiveByID(ctx, id)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, "", domain.ErrAvatarNotFound
 	}
@@ -169,7 +170,7 @@ func (s *AvatarService) GetBinary(ctx context.Context, id uuid.UUID, size string
 	if key == "" {
 		return nil, "", domain.ErrThumbnailNotReady
 	}
-	body, ct, err := s.Storage.Download(ctx, key)
+	body, ct, err := s.storage.Download(ctx, key)
 	if errors.Is(err, repository.ErrNotFoundInBucket) {
 		return nil, "", domain.ErrThumbnailNotReady
 	}
@@ -184,7 +185,7 @@ func (s *AvatarService) GetBinary(ctx context.Context, id uuid.UUID, size string
 
 // GetByUserID возвращает активную аватарку пользователя.
 func (s *AvatarService) GetByUserID(ctx context.Context, userID string) (*domain.Avatar, error) {
-	a, err := s.Repo.GetActiveByUserID(ctx, userID)
+	a, err := s.repo.GetActiveByUserID(ctx, userID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, domain.ErrAvatarNotFound
 	}
@@ -196,12 +197,12 @@ func (s *AvatarService) ListByUserID(ctx context.Context, userID string, limit i
 	if limit <= 0 {
 		limit = 50
 	}
-	return s.Repo.ListByUserID(ctx, userID, limit)
+	return s.repo.ListByUserID(ctx, userID, limit)
 }
 
 // Delete помечает аватарку как удалённую и публикует событие на очистку S3.
 func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterUserID string) error {
-	a, err := s.Repo.GetByID(ctx, id)
+	a, err := s.repo.GetByID(ctx, id)
 	if errors.Is(err, repository.ErrNotFound) {
 		return domain.ErrAvatarNotFound
 	}
@@ -211,7 +212,7 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterUserI
 	if a.UserID != requesterUserID {
 		return domain.ErrForbidden
 	}
-	if err := s.Repo.SoftDelete(ctx, id); err != nil {
+	if err := s.repo.SoftDelete(ctx, id); err != nil {
 		return err
 	}
 
@@ -219,7 +220,7 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterUserI
 	for _, k := range a.ThumbnailS3Keys {
 		keys = append(keys, k)
 	}
-	if err := s.Publisher.PublishDelete(ctx, domain.AvatarDeleteEvent{
+	if err := s.publisher.PublishDelete(ctx, domain.AvatarDeleteEvent{
 		AvatarID:  id.String(),
 		UserID:    requesterUserID,
 		S3Keys:    keys,
@@ -229,6 +230,30 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterUserI
 		logger.L().Error().Err(err).Str("avatar_id", id.String()).Msg("publish delete event failed")
 	}
 	return nil
+}
+
+// DeleteAllByUserID помечает все аватарки пользователя как удалённые и
+// публикует delete-события для каждой. Возвращает количество удалённых.
+func (s *AvatarService) DeleteAllByUserID(ctx context.Context, userID string) (int, error) {
+	avatars, err := s.repo.SoftDeleteAllByUserID(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	for _, a := range avatars {
+		keys := []string{a.S3Key}
+		for _, k := range a.ThumbnailS3Keys {
+			keys = append(keys, k)
+		}
+		if err := s.publisher.PublishDelete(ctx, domain.AvatarDeleteEvent{
+			AvatarID:  a.ID.String(),
+			UserID:    userID,
+			S3Keys:    keys,
+			DeletedAt: time.Now().UTC(),
+		}); err != nil {
+			logger.L().Error().Err(err).Str("avatar_id", a.ID.String()).Msg("publish delete event failed")
+		}
+	}
+	return len(avatars), nil
 }
 
 // originalKey строит S3-ключ для оригинального файла аватарки.

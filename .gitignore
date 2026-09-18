@@ -33,3 +33,4 @@ Thumbs.db
 # Tooling state (not part of the project)
 .playwright-mcp/
 .thclaws/
+_uploads/

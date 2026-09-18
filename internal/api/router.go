@@ -23,6 +23,7 @@ func Router(h *Handlers, webDir string, maxBody int64) http.Handler {
 		r.Get("/avatars/{id}/metadata", h.GetMetadata)
 		r.Delete("/avatars/{id}", h.DeleteAvatar)
 		r.Get("/users/{user_id}/avatar", h.GetUserAvatar)
+		r.Delete("/users/{user_id}/avatar", h.DeleteUserAvatar)
 		r.Get("/users/{user_id}/avatars", h.ListUserAvatars)
 	})
 

@@ -120,6 +120,20 @@ func (r *inMemoryRepo) SoftDelete(_ context.Context, id uuid.UUID) error {
 	}
 	return nil
 }
+func (r *inMemoryRepo) SoftDeleteAllByUserID(_ context.Context, uid string) ([]*domain.Avatar, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.Avatar
+	now := time.Now()
+	for _, a := range r.items {
+		if a.UserID == uid && a.DeletedAt == nil {
+			a.DeletedAt = &now
+			cp := *a
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
 
 // testStorage stores uploads by key.
 type testStorage struct {
@@ -338,4 +352,3 @@ func TestIdempotencyTTL(t *testing.T) {
 }
 
 // jsonMarshal is provided by testhelpers_test.go.
-

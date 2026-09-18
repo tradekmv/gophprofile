@@ -31,6 +31,7 @@ type AvatarRepository interface {
 	UpdateThumbnails(ctx context.Context, id uuid.UUID, keys map[string]string) error
 	MarkUploadStatus(ctx context.Context, id uuid.UUID, status string) error
 	SoftDelete(ctx context.Context, id uuid.UUID) error
+	SoftDeleteAllByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error)
 }
 
 // PostgresAvatarRepo — реализация на pgx.
@@ -237,4 +238,31 @@ func scanAvatar(s rowScanner) (*domain.Avatar, error) {
 	}
 	a.DeletedAt = deleted
 	return &a, nil
+}
+
+// SoftDeleteAllByUserID помечает deleted_at на всех не удалённых аватарках
+// пользователя. Возвращает список затронутых аватарок (для publish delete events).
+func (r *PostgresAvatarRepo) SoftDeleteAllByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+	const q = `
+		UPDATE avatars SET deleted_at=NOW()
+		WHERE user_id = $1 AND deleted_at IS NULL
+		RETURNING id, user_id, file_name, mime_type, size_bytes, s3_key,
+		          thumbnail_s3_keys, upload_status, processing_status,
+		          created_at, updated_at, deleted_at
+	`
+	rows, err := r.pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query soft delete: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Avatar
+	for rows.Next() {
+		a, err := scanAvatar(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

@@ -17,19 +17,21 @@ type Config struct {
 	WebDir        string `envconfig:"WEB_DIR"        default:"./web"`
 
 	// PostgreSQL
-	PostgresHost     string `envconfig:"POSTGRES_HOST"     default:"localhost"`
-	PostgresPort     int    `envconfig:"POSTGRES_PORT"     default:"5432"`
-	PostgresDB       string `envconfig:"POSTGRES_DB"       default:"gophprofile"`
-	PostgresUser     string `envconfig:"POSTGRES_USER"     default:"app"`
-	PostgresPassword string `envconfig:"POSTGRES_PASSWORD" default:"app"`
+	PostgresHost string `envconfig:"POSTGRES_HOST"     default:"localhost"`
+	PostgresPort int    `envconfig:"POSTGRES_PORT"     default:"5432"`
+	PostgresDB   string `envconfig:"POSTGRES_DB"       default:"gophprofile"`
+	PostgresUser string `envconfig:"POSTGRES_USER"     default:"app"`
+	// Секреты — дефолтов нет: если переменная не задана, сервис должен
+	// упасть при старте (fail early). Это безопаснее, чем дефолт вроде "app".
+	PostgresPassword string `envconfig:"POSTGRES_PASSWORD" required:"true"`
 	DatabaseDSN      string `envconfig:"DATABASE_DSN"      default:""`
 
 	// S3 / MinIO
 	S3Endpoint      string `envconfig:"S3_ENDPOINT"      default:"http://localhost:9000"`
 	S3Region        string `envconfig:"S3_REGION"        default:"us-east-1"`
 	S3Bucket        string `envconfig:"S3_BUCKET"        default:"avatars"`
-	S3AccessKey     string `envconfig:"S3_ACCESS_KEY"    default:"app"`
-	S3SecretKey     string `envconfig:"S3_SECRET_KEY"    default:"app"`
+	S3AccessKey     string `envconfig:"S3_ACCESS_KEY"    required:"true"`
+	S3SecretKey     string `envconfig:"S3_SECRET_KEY"    required:"true"`
 	S3UseSSL        bool   `envconfig:"S3_USE_SSL"       default:"false"`
 	S3PublicBaseURL string `envconfig:"S3_PUBLIC_BASE_URL" default:"http://localhost:9000/avatars"`
 

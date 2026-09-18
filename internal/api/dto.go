@@ -50,9 +50,10 @@ type UserAvatarsResponse struct {
 }
 
 // ComponentHealth — одна запись о компоненте в /health.
+// Error-поле намеренно отсутствует: внутренние детали сбоя не должны
+// попадать клиенту через JSON.
 type ComponentHealth struct {
 	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
 }
 
 // HealthResponse — JSON для GET /health.
