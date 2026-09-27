@@ -1,0 +1,25 @@
+# ---- build stage ----
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+
+ENV CGO_ENABLED=0 GOOS=linux GOFLAGS=-trimpath
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+ENV GOFLAGS=-mod=mod
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -ldflags="-s -w" -o /out/worker ./cmd/worker
+
+# ---- runtime stage ----
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S app && adduser -S app -G app
+
+WORKDIR /app
+COPY --from=builder /out/worker /app/worker
+
+USER app
+ENTRYPOINT ["/app/worker"]
