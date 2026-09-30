@@ -8,13 +8,10 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 func TestSetupUnknownLevelFallsBackToInfo(t *testing.T) {
-	t.Parallel()
-
-	// Capture stdout during Setup.
+	// Без t.Parallel() — тест меняет глобальный os.Stdout, race с параллельными тестами.
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
 	os.Stdout = w
@@ -38,8 +35,7 @@ func TestSetupUnknownLevelFallsBackToInfo(t *testing.T) {
 }
 
 func TestSetupKnownLevelParses(t *testing.T) {
-	t.Parallel()
-
+	// Без t.Parallel() — тест меняет глобальный os.Stdout, race с параллельными тестами.
 	r, w, _ := os.Pipe()
 	oldStdout := os.Stdout
 	os.Stdout = w
@@ -62,9 +58,8 @@ func TestSetupKnownLevelParses(t *testing.T) {
 
 func TestLReturnsGlobalLogger(t *testing.T) {
 	t.Parallel()
-	prev := log.Logger
-	defer func() { log.Logger = prev }()
-	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	// L() возвращает baseLogger (наш package-level singleton), не log.Logger.
+	// Не трогаем log.Logger — это устраняет race с другими параллельными тестами.
 	got := L()
 	if got == nil {
 		t.Fatal("L() returned nil")
@@ -73,7 +68,8 @@ func TestLReturnsGlobalLogger(t *testing.T) {
 
 // TestDebugLevelParse sanity-checks that zerolog can parse our common levels.
 func TestDebugLevelParse(t *testing.T) {
-	t.Parallel()
+	// Без t.Parallel() — мы используем локальный буфер и глобальный zerolog.GlobalLevel
+	// (через SetGlobalLevel/ParseLevel), чтобы не конкурировать с другими тестами.
 	for _, raw := range []string{"trace", "debug", "info", "warn", "error", "fatal", "panic", "unknown"} {
 		_, err := zerolog.ParseLevel(strings.ToLower(raw))
 		if raw == "unknown" {
@@ -87,17 +83,10 @@ func TestDebugLevelParse(t *testing.T) {
 		}
 	}
 
-	// Sanity: parse a JSON log line via the global logger wired to a buffer.
+	// Sanity: JSON log line через локальный zerolog.Logger (не глобальный).
 	var buf bytes.Buffer
-	prev := log.Logger
-	prevLvl := zerolog.GlobalLevel()
-	log.Logger = zerolog.New(&buf).With().Timestamp().Logger()
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	defer func() {
-		log.Logger = prev
-		zerolog.SetGlobalLevel(prevLvl)
-	}()
-	log.Logger.Info().Str("a", "b").Msg("c")
+	lg := zerolog.New(&buf).With().Timestamp().Logger()
+	lg.Info().Str("a", "b").Msg("c")
 	var got map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &got); err != nil {
 		t.Fatalf("not JSON: %v", err)

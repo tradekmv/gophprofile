@@ -1,0 +1,11 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: gophprofile-noop
+    receivers:
+      - uid: gophprofile-noop-receiver
+        type: webhook
+        settings:
+          url: 'http://127.0.0.1:5001'
+        disableResolveMessage: false

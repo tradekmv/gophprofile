@@ -13,7 +13,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// s3Tracer — глобальный tracer для S3-операций.
+var s3Tracer = otel.Tracer("gophprofile.repository.s3")
 
 // Sentinel-ошибки S3-репозитория.
 var (
@@ -86,6 +93,15 @@ func (s *S3Storage) Upload(ctx context.Context, key string, body io.Reader, size
 	if key == "" {
 		return errors.New("empty key")
 	}
+	ctx, span := s3Tracer.Start(ctx, "s3.upload_object",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("aws.s3.bucket", s.bucket),
+			attribute.String("aws.s3.key", key),
+			attribute.Int64("aws.s3.content_length", size),
+		),
+	)
+	defer span.End()
 	in := &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
@@ -96,6 +112,8 @@ func (s *S3Storage) Upload(ctx context.Context, key string, body io.Reader, size
 		in.ContentLength = aws.Int64(size)
 	}
 	if _, err := s.client.PutObject(ctx, in); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "put object failed")
 		return fmt.Errorf("put %s: %w", key, err)
 	}
 	return nil
@@ -103,21 +121,36 @@ func (s *S3Storage) Upload(ctx context.Context, key string, body io.Reader, size
 
 // Download скачивает объект и возвращает его тело + content-type.
 func (s *S3Storage) Download(ctx context.Context, key string) (io.ReadCloser, string, error) {
+	ctx, span := s3Tracer.Start(ctx, "s3.get_object",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("aws.s3.bucket", s.bucket),
+			attribute.String("aws.s3.key", key),
+		),
+	)
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		span.RecordError(err)
 		var notFound *s3types.NoSuchKey
 		if errors.As(err, &notFound) {
+			span.SetAttributes(attribute.Bool("aws.s3.not_found", true))
+			span.End()
 			return nil, "", ErrNotFoundInBucket
 		}
+		span.SetStatus(codes.Error, "get object failed")
+		span.End()
 		return nil, "", fmt.Errorf("get %s: %w", key, err)
 	}
 	ct := ""
 	if out.ContentType != nil {
 		ct = *out.ContentType
 	}
+	// Закрываем span в фоне, когда body закрывается. Для простоты закрываем сейчас,
+	// потому что длительность Download определяется самой загрузкой.
+	defer span.End()
 	return out.Body, ct, nil
 }
 
@@ -141,6 +174,14 @@ func (s *S3Storage) Delete(ctx context.Context, keys ...string) error {
 	if len(objects) == 0 {
 		return nil
 	}
+	ctx, span := s3Tracer.Start(ctx, "s3.delete_objects",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("aws.s3.bucket", s.bucket),
+			attribute.Int("aws.s3.keys.count", len(objects)),
+		),
+	)
+	defer span.End()
 	_, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 		Bucket: aws.String(s.bucket),
 		Delete: &s3types.Delete{
@@ -149,6 +190,8 @@ func (s *S3Storage) Delete(ctx context.Context, keys ...string) error {
 		},
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "delete objects failed")
 		return fmt.Errorf("delete: %w", err)
 	}
 	return nil
