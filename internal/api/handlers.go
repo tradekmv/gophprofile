@@ -128,7 +128,7 @@ func (h *Handlers) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	if h.Metrics != nil {
 		h.Metrics.UploadsTotal.WithLabelValues("success").Inc()
 		h.Metrics.UploadDuration.WithLabelValues("success").Observe(time.Since(startUpload).Seconds())
-		h.Metrics.StorageBytes.WithLabelValues(userID).Add(float64(result.Avatar.SizeBytes))
+		h.Metrics.StorageBytes.Add(float64(result.Avatar.SizeBytes))
 	}
 
 	writeJSON(w, http.StatusCreated, UploadResponse{

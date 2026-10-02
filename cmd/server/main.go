@@ -137,15 +137,12 @@ func run() error {
 	}
 
 	// Прямой /metrics endpoint (Prometheus pull, fallback).
-	if cfg.MetricsHTTPAddr != "" {
-		go func() {
-			mux := http.NewServeMux()
-			mux.Handle("/metrics", metrics.Handler())
-			mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-			srv := &http.Server{Addr: cfg.MetricsHTTPAddr, Handler: mux}
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.L().Error().Err(err).Msg("metrics HTTP server error")
-			}
+	// Прямой /metrics endpoint (Prometheus pull, fallback).
+	if metricsShutdown := observability.StartPrometheusHTTP(cfg.MetricsHTTPAddr, metrics.Handler()); metricsShutdown != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = metricsShutdown(ctx)
 		}()
 	}
 

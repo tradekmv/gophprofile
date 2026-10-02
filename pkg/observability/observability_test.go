@@ -3,8 +3,10 @@ package observability
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -104,8 +106,18 @@ func TestShutdownFunc(t *testing.T) {
 }
 
 func TestStartPrometheusHTTPDisabled(t *testing.T) {
-	f := StartPrometheusHTTP("")
-	require.NoError(t, f(context.Background()))
+	// Пустой addr и nil handler — обе ветки возвращают NoopShutdown.
+	require.NoError(t, StartPrometheusHTTP("", nil)(context.Background()))
+}
+
+func TestStartPrometheusHTTPShutdown(t *testing.T) {
+	// Запускаем сервер на произвольном порту, сразу shutdown, не должно падать.
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	shutdown := StartPrometheusHTTP("127.0.0.1:0", h)
+	require.NotNil(t, shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, shutdown(ctx))
 }
 
 func TestInitWithVariousConfigs(t *testing.T) {
@@ -163,7 +175,7 @@ func TestIsEnabled(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.envVal, func(t *testing.T) {
 			t.Setenv("OTEL_TEST_EXPORTER", c.envVal)
-			require.Equal(t, c.want, isEnabled("OTEL_TEST_EXPORTER", Config{}))
+			require.Equal(t, c.want, isEnabled("OTEL_TEST_EXPORTER"))
 		})
 	}
 }
@@ -251,10 +263,6 @@ func TestBuildResource(t *testing.T) {
 		require.NotNil(t, res)
 	})
 }
-
-// TestStartPrometheusHTTPDisabled покрывает StartPrometheusHTTP с пустым addr.
-// (объявлен выше — здесь оставлен только для покрытия initTracer через Init)
-func _unused() {}
 
 // TestInitWithRealEndpoint проверяет Init с реальным OTLP endpoint (без collector'а
 // Init создаст exporter, но exporter не сможет подключиться — это нормально,

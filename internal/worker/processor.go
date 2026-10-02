@@ -111,71 +111,81 @@ func (p *Processor) Handle(ctx context.Context, msgType, messageID, raw []byte) 
 }
 
 // processUpload обрабатывает AvatarUploaded.
-func (p *Processor) processUpload(ctx context.Context, e *domain.AvatarUploadEvent, messageID string) error {
+//
+// Метрики: один defer в конце функции вызывает observeProcessing(status, start),
+// где status выставляется в каждой ветке. Это исключает двойной учёт failed-операций
+// как completed (баг, на который указал ревьюер Sprint 12).
+func (p *Processor) processUpload(ctx context.Context, e *domain.AvatarUploadEvent, messageID string) (err error) {
 	ctx, span := tracer.Start(ctx, p.TracerName+".processUpload",
 		trace.WithAttributes(attribute.String("avatar.id", e.AvatarID)),
 	)
 	defer span.End()
 
 	start := time.Now()
-	defer p.observeProcessing("completed", start)
+	status := "completed"
+	defer func() {
+		p.observeProcessing(status, start)
+	}()
 
-	id, err := uuid.Parse(e.AvatarID)
-	if err != nil {
-		span.RecordError(err)
+	id, parseErr := uuid.Parse(e.AvatarID)
+	if parseErr != nil {
+		span.RecordError(parseErr)
 		span.SetStatus(codes.Error, "parse avatar id")
-		p.observeProcessing("decode_error", start)
-		return fmt.Errorf("parse avatar id: %w", err)
+		status = "decode_error"
+		return fmt.Errorf("parse avatar id: %w", parseErr)
 	}
 
-	avatar, err := p.Repo.GetByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
+	avatar, getErr := p.Repo.GetByID(ctx, id)
+	if getErr != nil {
+		if errors.Is(getErr, repository.ErrNotFound) {
 			// Аватарки нет — помечаем событие обработанным и выходим.
+			// Бизнес-успех (no-op), но не completed-листка.
 			logger.L().Warn().Str("avatar_id", e.AvatarID).Msg("avatar not found, skipping")
+			status = "skipped"
 			return p.Processed.Mark(messageID)
 		}
-		span.RecordError(err)
-		p.observeProcessing("storage_error", start)
-		return err
+		span.RecordError(getErr)
+		status = "storage_error"
+		return getErr
 	}
 
 	if avatar.ProcessingStatus == domain.ProcessingStatusCompleted {
 		logger.L().Debug().Str("avatar_id", e.AvatarID).Msg("already processed, skipping")
+		status = "skipped"
 		return p.Processed.Mark(messageID)
 	}
 
-	if err := p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusProcessing); err != nil {
-		span.RecordError(err)
-		p.observeProcessing("storage_error", start)
-		return err
+	if updateErr := p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusProcessing); updateErr != nil {
+		span.RecordError(updateErr)
+		status = "storage_error"
+		return updateErr
 	}
 
 	// Скачиваем оригинал.
-	body, _, err := p.Storage.Download(ctx, e.S3Key)
-	if err != nil {
+	body, _, downloadErr := p.Storage.Download(ctx, e.S3Key)
+	if downloadErr != nil {
 		_ = p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed)
-		span.RecordError(err)
-		p.observeProcessing("storage_error", start)
-		return fmt.Errorf("download original: %w", err)
+		span.RecordError(downloadErr)
+		status = "storage_error"
+		return fmt.Errorf("download original: %w", downloadErr)
 	}
 	defer func() { _ = body.Close() }()
 
-	imgBytes, err := io.ReadAll(body)
-	if err != nil {
+	imgBytes, readErr := io.ReadAll(body)
+	if readErr != nil {
 		_ = p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed)
-		span.RecordError(err)
-		p.observeProcessing("decode_error", start)
-		return fmt.Errorf("read body: %w", err)
+		span.RecordError(readErr)
+		status = "decode_error"
+		return fmt.Errorf("read body: %w", readErr)
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(imgBytes))
-	if err != nil {
+	img, _, decodeErr := image.Decode(bytes.NewReader(imgBytes))
+	if decodeErr != nil {
 		_ = p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed)
-		span.RecordError(err)
+		span.RecordError(decodeErr)
 		span.SetStatus(codes.Error, "decode image")
-		p.observeProcessing("decode_error", start)
-		return fmt.Errorf("decode image: %w", err)
+		status = "decode_error"
+		return fmt.Errorf("decode image: %w", decodeErr)
 	}
 
 	thumbs := map[string]string{}
@@ -190,34 +200,35 @@ func (p *Processor) processUpload(ctx context.Context, e *domain.AvatarUploadEve
 			quality = 85
 		}
 		buf := new(bytes.Buffer)
-		if err := imaging.Encode(buf, resized, imaging.JPEG, imaging.JPEGQuality(quality)); err != nil {
+		if encErr := imaging.Encode(buf, resized, imaging.JPEG, imaging.JPEGQuality(quality)); encErr != nil {
 			_ = p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed)
-			span.RecordError(err)
-			p.observeProcessing("decode_error", start)
-			return fmt.Errorf("encode thumbnail %dx%d: %w", op.Width, op.Height, err)
+			span.RecordError(encErr)
+			status = "decode_error"
+			return fmt.Errorf("encode thumbnail %dx%d: %w", op.Width, op.Height, encErr)
 		}
-		if err := p.Storage.UploadBytes(ctx, key, buf.Bytes(), "image/jpeg"); err != nil {
+		if upErr := p.Storage.UploadBytes(ctx, key, buf.Bytes(), "image/jpeg"); upErr != nil {
 			_ = p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed)
-			span.RecordError(err)
-			p.observeProcessing("storage_error", start)
-			return fmt.Errorf("upload thumbnail %s: %w", key, err)
+			span.RecordError(upErr)
+			status = "storage_error"
+			return fmt.Errorf("upload thumbnail %s: %w", key, upErr)
 		}
 		thumbs[fmt.Sprintf("%dx%d", op.Width, op.Height)] = key
 	}
 	span.SetAttributes(attribute.Int("thumbnails.count", len(thumbs)))
 
-	if err := p.Repo.UpdateThumbnails(ctx, id, thumbs); err != nil {
+	if upThumbsErr := p.Repo.UpdateThumbnails(ctx, id, thumbs); upThumbsErr != nil {
 		_ = p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed)
-		span.RecordError(err)
-		p.observeProcessing("storage_error", start)
-		return fmt.Errorf("update thumbnails: %w", err)
+		span.RecordError(upThumbsErr)
+		status = "storage_error"
+		return fmt.Errorf("update thumbnails: %w", upThumbsErr)
 	}
-	if err := p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusCompleted); err != nil {
-		return err
+	if finalErr := p.Repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusCompleted); finalErr != nil {
+		status = "storage_error"
+		return finalErr
 	}
 
-	if err := p.Processed.Mark(messageID); err != nil {
-		logger.L().Warn().Err(err).Msg("idempotency mark failed")
+	if markErr := p.Processed.Mark(messageID); markErr != nil {
+		logger.L().Warn().Err(markErr).Msg("idempotency mark failed")
 	}
 	logger.L().Info().
 		Str("avatar_id", e.AvatarID).
@@ -236,7 +247,10 @@ func (p *Processor) observeProcessing(status string, start time.Time) {
 }
 
 // processDelete обрабатывает AvatarDeleted (best-effort удаление из S3).
-func (p *Processor) processDelete(ctx context.Context, e *domain.AvatarDeleteEvent, messageID string) error {
+//
+// Как и processUpload: один defer смотрит на named return err для определения
+// статуса — "completed" при Mark, "storage_error" при S3-fail.
+func (p *Processor) processDelete(ctx context.Context, e *domain.AvatarDeleteEvent, messageID string) (err error) {
 	ctx, span := tracer.Start(ctx, p.TracerName+".processDelete",
 		trace.WithAttributes(
 			attribute.String("avatar.id", e.AvatarID),
@@ -246,18 +260,19 @@ func (p *Processor) processDelete(ctx context.Context, e *domain.AvatarDeleteEve
 	defer span.End()
 
 	start := time.Now()
-	defer p.observeProcessing("completed", start)
+	status := "completed"
+	defer func() {
+		p.observeProcessing(status, start)
+	}()
 
 	if len(e.S3Keys) == 0 {
 		return p.Processed.Mark(messageID)
 	}
-	if err := p.Storage.Delete(ctx, e.S3Keys...); err != nil {
-		span.RecordError(err)
-		if p.Metrics != nil {
-			p.Metrics.FailedTotal.WithLabelValues("storage_error").Inc()
-		}
+	if delErr := p.Storage.Delete(ctx, e.S3Keys...); delErr != nil {
+		span.RecordError(delErr)
+		status = "storage_error"
 		// Логируем и всё равно помечаем — иначе зависнем на постоянной ошибке.
-		logger.L().Warn().Err(err).Strs("keys", e.S3Keys).Msg("delete failed")
+		logger.L().Warn().Err(delErr).Strs("keys", e.S3Keys).Msg("delete failed")
 	}
 	return p.Processed.Mark(messageID)
 }

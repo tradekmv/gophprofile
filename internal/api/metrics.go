@@ -24,8 +24,9 @@ type BusinessMetrics struct {
 	// Инфраструктурные метрики (выставляются из pgx/worker).
 	DBConnectionsOpen prometheus.Gauge
 
-	// Storage usage (bytes) per user — gauge из ТЗ Sprint 12.
-	StorageBytes *prometheus.GaugeVec
+	// Storage usage (bytes) — gauge из ТЗ Sprint 12. Без label (один общий счётчик
+	// на сервис), чтобы избежать unbounded cardinality.
+	StorageBytes prometheus.Gauge
 }
 
 // NewBusinessMetrics создаёт и регистрирует все метрики.
@@ -76,12 +77,11 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Help: "Number of open database connections.",
 		},
 	)
-	m.StorageBytes = prometheus.NewGaugeVec(
+	m.StorageBytes = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "avatars_storage_bytes",
-			Help: "Total storage used by avatars per user.",
+			Help: "Total storage used by avatars (bytes, service-wide).",
 		},
-		[]string{"user_id"},
 	)
 	reg.MustRegister(
 		m.HTTPRequestsTotal,

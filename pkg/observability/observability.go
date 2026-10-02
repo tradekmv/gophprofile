@@ -17,6 +17,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -162,7 +163,7 @@ func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) 
 }
 
 func initTracer(ctx context.Context, cfg Config, res *resource.Resource) Shutdown {
-	if !isEnabled("OTEL_TRACES_EXPORTER", cfg) {
+	if !isEnabled("OTEL_TRACES_EXPORTER") {
 		return NoopShutdown
 	}
 	// Используем отдельный endpoint для traces (если задан), иначе общий.
@@ -196,7 +197,7 @@ func initTracer(ctx context.Context, cfg Config, res *resource.Resource) Shutdow
 }
 
 func initMeter(ctx context.Context, cfg Config, res *resource.Resource) Shutdown {
-	if !isEnabled("OTEL_METRICS_EXPORTER", cfg) {
+	if !isEnabled("OTEL_METRICS_EXPORTER") {
 		return NoopShutdown
 	}
 
@@ -254,7 +255,7 @@ func stripScheme(endpoint string) string {
 // Приложение пишет логи через slog, otelslog направляет их в OTel Collector
 // по OTLP/gRPC. Collector дальше маршрутизирует в Loki.
 func initLogger(ctx context.Context, cfg Config, res *resource.Resource) Shutdown {
-	if !isEnabled("OTEL_LOGS_EXPORTER", cfg) {
+	if !isEnabled("OTEL_LOGS_EXPORTER") {
 		return NoopShutdown
 	}
 	exporter, err := newLogExporter(ctx, cfg)
@@ -285,7 +286,7 @@ func newLogExporter(ctx context.Context, cfg Config) (*otlploggrpc.Exporter, err
 }
 
 // isEnabled проверяет OTEL_*_EXPORTER: "none"/"false"/"off" → false.
-func isEnabled(envKey string, _ Config) bool {
+func isEnabled(envKey string) bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv(envKey)))
 	switch v {
 	case "none", "false", "off":
@@ -303,20 +304,27 @@ func getEnv(key, fallback string) string {
 
 // --- Prometheus HTTP /metrics endpoint (fallback) ---
 
-// StartPrometheusHTTP запускает HTTP-сервер на addr (например, ":9095") с /metrics.
-// Используется как fallback, когда Prometheus pull-моделью напрямую забирает метрики
-// из приложения, минуя OTel Collector.
-func StartPrometheusHTTP(addr string) Shutdown {
-	if addr == "" {
+// StartPrometheusHTTP запускает HTTP-сервер на addr (например, ":9095")
+// с готовым handler (mux с /metrics и /healthz). Используется как fallback,
+// когда Prometheus pull-моделью напрямую забирает метрики из приложения, минуя OTel Collector.
+//
+// Поддерживает graceful shutdown через переданную context.
+func StartPrometheusHTTP(addr string, handler http.Handler) Shutdown {
+	if addr == "" || handler == nil {
 		return NoopShutdown
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	srv := &http.Server{Addr: addr, Handler: mux}
-	go func() { _ = srv.ListenAndServe() }()
-	return func(_ context.Context) error {
-		return srv.Close()
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "observability: metrics HTTP server error: %v\n", err)
+		}
+	}()
+	return func(ctx context.Context) error {
+		return srv.Shutdown(ctx)
 	}
 }
 

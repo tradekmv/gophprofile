@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -31,18 +32,37 @@ func RequestLogger(next http.Handler) http.Handler {
 
 // MetricsMiddleware записывает RED-метрики через переданный *BusinessMetrics.
 // Оборачивает ResponseWriter для получения финального статуса.
+//
+// route берётся из chi.RouteContext (шаблон маршрута, например "/api/v1/avatars/{id}"),
+// а не из r.URL.Path (фактический URL). Это критично для bounded cardinality
+// меток — иначе каждый UUID породит уникальную серию в Prometheus.
 func MetricsMiddleware(m *BusinessMetrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
-			route := r.URL.Path
+			route := routePattern(r)
 			status := strconv.Itoa(ww.Status())
 			m.HTTPRequestsTotal.WithLabelValues(r.Method, route, status).Inc()
 			m.HTTPRequestDuration.WithLabelValues(r.Method, route, status).Observe(time.Since(start).Seconds())
 		})
 	}
+}
+
+// routePattern возвращает chi-шаблон маршрута ("/api/v1/avatars/{id}") или
+// "unknown" если шаблон не определён (например, для 404). Это ограничивает
+// cardinality меток в Prometheus, защищая от взрывного роста при сканировании.
+func routePattern(r *http.Request) string {
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil {
+		return "unknown"
+	}
+	p := rctx.RoutePattern()
+	if p == "" {
+		return "unknown"
+	}
+	return p
 }
 
 // TracingMiddleware оборачивает хендлер в otelhttp.NewHandler для создания
