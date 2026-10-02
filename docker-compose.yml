@@ -63,30 +63,51 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.server
-    entrypoint: ["/app/migrate"]
-    command: ["up"]
+    # Retry-loop: ждём Postgres до 60 сек, потом применяем миграции.
+    # Это решает race condition когда Postgres healthcheck срабатывает раньше,
+    # чем TCP-сокет реально принимает подключения.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $$(seq 1 30); do
+          if /app/migrate up; then
+            exit 0
+          fi
+          echo "migration failed, retry $$i in 2s..."
+          sleep 2
+        done
+        exit 1
     env_file: .env
     environment:
       # DATABASE_DSN собирается из POSTGRES_* переменных в .env, если пусто.
       DATABASE_DSN: ""
+    # Монтируем свежие миграции из хоста (compose-образ может быть старым).
+    volumes:
+      - ./migrations:/app/migrations:ro
     depends_on:
       postgres:
-        condition: service_healthy
-    restart: no
+        condition: service_started
+    restart: on-failure
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.1
     depends_on:
       kafka:
-        condition: service_healthy
+        condition: service_started
     entrypoint: ["/bin/sh", "-c"]
+    # Retry: kafka может быть health, но не отвечать на 9092 ещё.
     command:
       - |
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
-          --topic avatar-events \
-          --partitions 3 \
-          --replication-factor 1
-    restart: no
+        for i in $$(seq 1 30); do
+          if kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+               --topic avatar-events --partitions 3 --replication-factor 1; then
+            exit 0
+          fi
+          echo "kafka init failed, retry $$i in 2s..."
+          sleep 2
+        done
+        exit 1
+    restart: on-failure
 
   minio-init:
     image: quay.io/minio/mc:latest
@@ -94,19 +115,120 @@ services:
       minio:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
+    # Retry: mc ready может сработать, но HTTP API ещё не отвечает.
     command:
       - |
-        mc alias set local http://minio:9000 gophprof gophprof-secret-1
-        mc mb --ignore-existing local/avatars
-        mc anonymous set download local/avatars
-    restart: no
+        for i in $$(seq 1 30); do
+          if mc alias set local http://minio:9000 gophprof gophprof-secret-1 2>/dev/null \
+               && mc mb --ignore-existing local/avatars \
+               && mc anonymous set download local/avatars; then
+            exit 0
+          fi
+          echo "minio init failed, retry $$i in 2s..."
+          sleep 2
+        done
+        exit 1
+    restart: on-failure
+
+  # --- Observability stack (sprint 12) ---
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.143.0
+    container_name: gophprofile-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./deploy/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "14317:4317"  # OTLP gRPC receiver (mapped off host's busy 4317)
+      - "14318:4318"  # OTLP HTTP receiver
+      - "18889:8889"  # Prometheus exporter (metrics pull endpoint)
+      - "13133:13133" # health_check
+    # healthcheck отключён: в минимальном образе otel/opentelemetry-collector-contrib
+    # нет ни curl, ни wget. depends_on: condition: service_started даёт достаточно.
+    depends_on:
+      jaeger:
+        condition: service_started
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: gophprofile-jaeger
+    # Jaeger all-in-one 1.62 с включённым OTLP receiver.
+    # otel-collector экспортирует трейсы в Jaeger через внутренний gRPC (jaeger:4317).
+    # UI доступен на :16686.
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI Jaeger
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.6.3
+    container_name: gophprofile-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./deploy/otel/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "13100:3100"  # HTTP API + OTLP
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: gophprofile-alertmanager
+    # Сервис запускается только с профилем `--profile alerting`.
+    # Это позволяет запускать стек без alertmanager (если образ недоступен
+    # из registry) — Prometheus при этом не сможет отправлять алерты, но
+    # всё остальное будет работать.
+    profiles: ["alerting"]
+    volumes:
+      - ./deploy/otel/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "9093:9093"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: gophprofile-prometheus
+    volumes:
+      - ./deploy/otel/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/otel/prometheus-rules.yml:/etc/prometheus/rules/gophprofile.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    container_name: gophprofile-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./deploy/otel/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/otel/grafana-provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
 
   server:
     build:
       context: .
       dockerfile: docker/Dockerfile.server
-    ports:
-      - "18080:8080"
     env_file: .env
     environment:
       # Все настройки берутся из env_file (.env). Ниже только overrides.
@@ -114,19 +236,36 @@ services:
       S3_PUBLIC_BASE_URL: http://localhost:9000/avatars
       KAFKA_BROKERS: kafka:9092
       BASE_URL: http://localhost:18080
+      # OpenTelemetry: per-signal endpoints.
+      # traces/logs — gRPC (4317), metrics — HTTP (4318).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_SERVICE_NAME: gophprofile-server
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=development,service.version=0.2.0
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_TRACES_EXPORTER: otlp
+    ports:
+      - "18080:8080"  # HTTP API
+      - "9095:9095"   # prometheus /metrics for direct fallback
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       minio:
-        condition: service_healthy
+        condition: service_started
       kafka:
-        condition: service_healthy
+        condition: service_started
       migrate:
         condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
 
   worker:
     build:
@@ -137,17 +276,38 @@ services:
       DATABASE_DSN: postgres://app:app@postgres:5432/gophprofile?sslmode=disable
       S3_ENDPOINT: http://minio:9000
       KAFKA_BROKERS: kafka:9092
+      # OpenTelemetry: per-signal endpoints.
+      # traces/logs — gRPC (4317), metrics — HTTP (4318).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_SERVICE_NAME: gophprofile-worker
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=development,service.version=0.2.0
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_TRACES_EXPORTER: otlp
+      # Прямой /metrics endpoint (Prometheus fallback, отдельный от server)
+      METRICS_HTTP_ADDR: :9096
+    ports:
+      - "9096:9096"
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       minio:
-        condition: service_healthy
+        condition: service_started
       kafka:
-        condition: service_healthy
+        condition: service_started
       kafka-init:
         condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
 
 volumes:
   pg_data:
   minio_data:
   kafka_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:

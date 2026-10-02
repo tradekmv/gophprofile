@@ -1,0 +1,81 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 16
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Пакетная обработка — снижает нагрузку на бэкенды.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Добавляем/нормализуем атрибуты ресурсов для удобства в бэкендах.
+  resource/add-job:
+    attributes:
+      - key: job
+        from_attribute: service.name
+        action: upsert
+      - key: deployment.environment
+        from_attribute: deployment.environment
+        action: upsert
+
+  # Memory limiter — защищает collector от OOM.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+exporters:
+  # Трейсы → Jaeger UI (OTLP/gRPC, 2.0.0 поддерживает OTLP из коробки).
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Трейсы → stdout (debug). Полезно для локальной диагностики.
+  debug:
+    verbosity: normal
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # Логи → Loki (OTLP HTTP на :3100/otlp).
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    compression: gzip
+    tls:
+      insecure: true
+
+  # Метрики → Prometheus-совместимый endpoint (pull).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # resource_to_telemetry_conversion выключен — service.name/version/env остаются
+    # только на resource, не на каждой метрике, иначе otelhttp-метрики
+    # http.server.request.duration ломаются с duplicate labels при наличии наших
+    # HTTPRequestDuration с теми же label-именами.
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/add-job, batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/add-job, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/add-job, batch]
+      exporters: [otlphttp/loki]

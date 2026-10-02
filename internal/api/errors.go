@@ -11,10 +11,11 @@ import (
 // writeError сериализует ошибку (или оборачивает общую) в JSON.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	e := httperr.As(err)
+	lg := logger.LContext(r.Context())
 	if e.Status >= 500 {
-		logger.L().Error().Err(err).Str("path", r.URL.Path).Msg("internal server error")
+		lg.Error().Err(err).Str("path", r.URL.Path).Msg("internal server error")
 	} else {
-		logger.L().Debug().Err(err).Str("path", r.URL.Path).Int("status", e.Status).Msg("client error")
+		lg.Debug().Err(err).Str("path", r.URL.Path).Int("status", e.Status).Msg("client error")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)

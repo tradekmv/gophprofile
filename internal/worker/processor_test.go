@@ -197,7 +197,7 @@ func newProcessor(t *testing.T) (*worker.Processor, *inMemoryRepo, *testStorage,
 	repo := newInMemoryRepo()
 	st := newTestStorage()
 	seen := worker.NewInMemoryProcessedStore(0)
-	p := worker.NewProcessor(repo, st, seen)
+	p := worker.NewProcessor(repo, st, seen, nil)
 	return p, repo, st, seen
 }
 

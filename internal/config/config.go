@@ -44,6 +44,12 @@ type Config struct {
 
 	// Размеры миниатюр
 	ThumbnailSizes []string `envconfig:"THUMBNAIL_SIZES" default:"100x100,300x300"`
+
+	// Observability (sprint 12)
+	OTELServiceName      string `envconfig:"OTEL_SERVICE_NAME"          default:"gophprofile-server"`
+	OTELExporterEndpoint string `envconfig:"OTEL_EXPORTER_OTLP_ENDPOINT" default:""`
+	OTELSDKDisabled      bool   `envconfig:"OTEL_SDK_DISABLED"            default:"false"`
+	MetricsHTTPAddr      string `envconfig:"METRICS_HTTP_ADDR"            default:":9095"`
 }
 
 // Load читает конфиг из окружения.
