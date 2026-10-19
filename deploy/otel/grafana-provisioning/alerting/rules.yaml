@@ -1,0 +1,124 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: gophprofile-http
+    folder: GophProfile
+    interval: 1m
+    rules:
+      - uid: gophprofile-high-error-rate
+        title: HighErrorRate (HTTP 5xx > 10%)
+        condition: A
+        data:
+          - refId: A
+            queryType: ''
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              refId: A
+              expr: 'sum(rate(avatars_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(avatars_http_requests_total[5m])), 1)'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              datasource:
+                type: prometheus
+                uid: PBFA97CFB590B2093
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: '{{ $labels.job }}: HTTP 5xx rate > 10%'
+          description: 'Job {{ $labels.job }} has more than 10% of 5xx responses over the last 5 minutes.'
+        labels:
+          severity: warning
+          service: gophprofile
+
+      - uid: gophprofile-high-response-time
+        title: HighResponseTime (HTTP p95 > 2s)
+        condition: B
+        data:
+          - refId: B
+            queryType: ''
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              refId: B
+              expr: 'histogram_quantile(0.95, sum(rate(avatars_http_request_duration_seconds_bucket[5m])) by (le, job))'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              datasource:
+                type: prometheus
+                uid: PBFA97CFB590B2093
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: '{{ $labels.job }}: p95 > 2s'
+          description: 'Job {{ $labels.job }} has p95 latency above 2 seconds for the last 5 minutes.'
+        labels:
+          severity: critical
+          service: gophprofile
+
+  - orgId: 1
+    name: gophprofile-worker
+    folder: GophProfile
+    interval: 1m
+    rules:
+      - uid: gophprofile-worker-failures
+        title: WorkerHighFailureRate (failures > 0.1/s за 10 мин)
+        condition: C
+        data:
+          - refId: C
+            queryType: ''
+            relativeTimeRange:
+              from: 1200
+              to: 0
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              refId: C
+              expr: sum(rate(avatars_worker_failed_total[10m]))
+              intervalMs: 1000
+              maxDataPoints: 43200
+              datasource:
+                type: prometheus
+                uid: PBFA97CFB590B2093
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: 'Worker failures > 0.1/s за 10 мин'
+          description: 'Worker failed events rate exceeds 0.1 per second for 10 minutes.'
+        labels:
+          severity: warning
+          service: gophprofile-worker
+
+      - uid: gophprofile-worker-slow
+        title: WorkerSlowProcessing (p95 > 5s)
+        condition: D
+        data:
+          - refId: D
+            queryType: ''
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              refId: D
+              expr: 'histogram_quantile(0.95, sum(rate(avatars_worker_processing_duration_seconds_bucket[5m])) by (le, status))'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              datasource:
+                type: prometheus
+                uid: PBFA97CFB590B2093
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: 'Worker p95 processing > 5s (status={{ $labels.status }})'
+          description: 'Worker processing p95 latency exceeds 5 seconds.'
+        labels:
+          severity: warning
+          service: gophprofile-worker

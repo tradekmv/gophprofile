@@ -1,5 +1,6 @@
 .PHONY: help init up down restart logs ps build test test-coverage lint \
-        migrate-up migrate-down run-server run-worker smoke clean
+        migrate-up migrate-down run-server run-worker smoke clean \
+        grafana-import e2e-obs
 
 SHELL := /bin/bash
 export GOMODCACHE    := $(CURDIR)/.gocache/mod
@@ -22,9 +23,23 @@ init: ## Initialize project: clone SPA template into web/
 	fi
 
 up: ## Start all services in docker-compose
-	docker compose up -d
+	docker compose up -d --remove-orphans
 	@echo "Waiting for services to be healthy..."
 	@docker compose ps
+	@echo ""
+	@echo "Importing Grafana dashboards..."
+	@$(MAKE) --no-print-directory grafana-import
+
+wait-healthy: ## Wait for all compose services to report healthy (up to 2 min)
+	@echo "Waiting for postgres/minio/kafka to be healthy..."
+	@for i in $$(seq 1 60); do \
+		if docker compose ps --format '{{.Service}}={{.Health}}' 2>/dev/null | \
+			grep -E '^(postgres|minio|kafka)=healthy$$' | wc -l | grep -q '^3$$'; then \
+			echo "all healthy"; exit 0; \
+		fi; \
+		sleep 2; \
+	done; \
+	echo "timeout"; exit 1
 
 down: ## Stop all services
 	docker compose down
@@ -80,6 +95,12 @@ run-worker: ## Run worker locally (requires .env)
 
 smoke: ## Run end-to-end smoke test (requires stack up)
 	bash scripts/smoke.sh
+
+e2e-obs: ## Run end-to-end observability check (containers, OTel, Prometheus, Grafana, alerts)
+	bash scripts/e2e-observability.sh
+
+grafana-import: ## Import dashboards/alert-rules into running Grafana (called automatically by compose)
+	bash scripts/import-dashboards.sh
 
 clean: ## Stop stack and remove build artifacts
 	docker compose down -v

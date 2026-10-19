@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'gophprofile'
+
+# Alertmanager — куда отправлять алерты.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # Метрики самого Prometheus.
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Метрики OpenTelemetry Collector (экспортируются через prometheus exporter).
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  # Прямой /metrics endpoint Go-приложения (fallback).
+  - job_name: 'gophprofile-server'
+    static_configs:
+      - targets: ['server:9095']
+
+  - job_name: 'gophprofile-worker'
+    static_configs:
+      - targets: ['worker:9096']

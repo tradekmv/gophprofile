@@ -70,7 +70,7 @@ func (f *failingHealth) Check(_ context.Context) error { return errors.New("down
 // newServer wires a router with the given service and healthers.
 func newServer(svc api.AvatarService, healthers ...api.HealthChecker) http.Handler {
 	h := &api.Handlers{Service: svc, BaseURL: "http://example.com", Healthers: healthers}
-	return api.Router(h, "", 10<<20)
+	return api.Router(h, api.RouterOptions{WebDir: "", MaxBody: 10 << 20})
 }
 
 func sampleJPEG() []byte {
@@ -180,7 +180,7 @@ func TestUploadPayloadTooLarge(t *testing.T) {
 		},
 		BaseURL: "http://example.com",
 	}
-	r := api.Router(h, "", 100)
+	r := api.Router(h, api.RouterOptions{WebDir: "", MaxBody: 100})
 	body := bytes.NewReader(make([]byte, 200))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/avatars", body)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=X")

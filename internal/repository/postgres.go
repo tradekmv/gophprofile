@@ -15,6 +15,11 @@ import (
 	"github.com/tradekmv/gophprofile/internal/domain"
 )
 
+// isPgxNoRows — единая проверка «нет строк» для pgx.
+func isPgxNoRows(err error) bool {
+	return errors.Is(err, pgx.ErrNoRows)
+}
+
 // Sentinel-ошибки репозитория.
 var (
 	ErrNotFound = errors.New("avatar not found")
@@ -73,12 +78,11 @@ func (r *PostgresAvatarRepo) Create(ctx context.Context, a *domain.Avatar) error
 		VALUES
 			($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
 	`
-	_, err := r.pool.Exec(ctx, q,
+	if _, err := execSpan(ctx, r.pool, q,
 		a.ID, a.UserID, a.FileName, a.MimeType, a.SizeBytes, a.S3Key,
 		a.UploadStatus, a.ProcessingStatus,
-	)
-	if err != nil {
-		return fmt.Errorf("insert avatar: %w", err)
+	); err != nil {
+		return err
 	}
 	return nil
 }
@@ -91,8 +95,14 @@ func (r *PostgresAvatarRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain
 		       created_at, updated_at, deleted_at
 		FROM avatars WHERE id = $1
 	`
-	row := r.pool.QueryRow(ctx, q, id)
-	a, err := scanAvatar(row)
+	row, scan := queryRowSpan(ctx, r.pool, q, id)
+	a, err := scanAvatar(row, scan)
+	if err != nil {
+		if isPgxNoRows(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -110,10 +120,10 @@ func (r *PostgresAvatarRepo) GetActiveByID(ctx context.Context, id uuid.UUID) (*
 		       created_at, updated_at, deleted_at
 		FROM avatars WHERE id = $1 AND deleted_at IS NULL
 	`
-	row := r.pool.QueryRow(ctx, q, id)
-	a, err := scanAvatar(row)
+	row, scan := queryRowSpan(ctx, r.pool, q, id)
+	a, err := scanAvatar(row, scan)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isPgxNoRows(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -132,10 +142,10 @@ func (r *PostgresAvatarRepo) GetActiveByUserID(ctx context.Context, userID strin
 		ORDER BY created_at DESC
 		LIMIT 1
 	`
-	row := r.pool.QueryRow(ctx, q, userID)
-	a, err := scanAvatar(row)
+	row, scan := queryRowSpan(ctx, r.pool, q, userID)
+	a, err := scanAvatar(row, scan)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isPgxNoRows(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -157,28 +167,30 @@ func (r *PostgresAvatarRepo) ListByUserID(ctx context.Context, userID string, li
 		ORDER BY created_at DESC
 		LIMIT $2
 	`
-	rows, err := r.pool.Query(ctx, q, userID, limit)
+	tr, err := querySpan(ctx, r.pool, q, userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query list: %w", err)
 	}
-	defer rows.Close()
+	defer tr.Close()
 
 	var out []*domain.Avatar
-	for rows.Next() {
-		a, err := scanAvatar(rows)
+	for tr.rows.Next() {
+		a, err := scanAvatar(tr.rows)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	return out, tr.rows.Err()
 }
 
 // UpdateProcessingStatus обновляет processing_status и обновляет updated_at.
 func (r *PostgresAvatarRepo) UpdateProcessingStatus(ctx context.Context, id uuid.UUID, status string) error {
 	const q = `UPDATE avatars SET processing_status=$1, updated_at=NOW() WHERE id=$2`
-	_, err := r.pool.Exec(ctx, q, status, id)
-	return err
+	if _, err := execSpan(ctx, r.pool, q, status, id); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateThumbnails сохраняет карту миниатюр (размер -> S3-ключ).
@@ -188,56 +200,32 @@ func (r *PostgresAvatarRepo) UpdateThumbnails(ctx context.Context, id uuid.UUID,
 		return fmt.Errorf("marshal thumbnails: %w", err)
 	}
 	const q = `UPDATE avatars SET thumbnail_s3_keys=$1, updated_at=NOW() WHERE id=$2`
-	_, err = r.pool.Exec(ctx, q, b, id)
-	return err
+	if _, err := execSpan(ctx, r.pool, q, b, id); err != nil {
+		return err
+	}
+	return nil
 }
 
 // MarkUploadStatus обновляет upload_status.
 func (r *PostgresAvatarRepo) MarkUploadStatus(ctx context.Context, id uuid.UUID, status string) error {
 	const q = `UPDATE avatars SET upload_status=$1, updated_at=NOW() WHERE id=$2`
-	_, err := r.pool.Exec(ctx, q, status, id)
-	return err
+	if _, err := execSpan(ctx, r.pool, q, status, id); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SoftDelete помечает аватарку как удалённую.
 func (r *PostgresAvatarRepo) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	const q = `UPDATE avatars SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL`
-	tag, err := r.pool.Exec(ctx, q, id)
+	rows, err := execSpan(ctx, r.pool, q, id)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if rows == 0 {
 		return ErrNotFound
 	}
 	return nil
-}
-
-// rowScanner абстрагирует pgx.Row и pgx.Rows для общего сканирования.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanAvatar(s rowScanner) (*domain.Avatar, error) {
-	var (
-		a       domain.Avatar
-		thumbs  []byte
-		deleted *time.Time
-	)
-	err := s.Scan(
-		&a.ID, &a.UserID, &a.FileName, &a.MimeType, &a.SizeBytes, &a.S3Key,
-		&thumbs, &a.UploadStatus, &a.ProcessingStatus,
-		&a.CreatedAt, &a.UpdatedAt, &deleted,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if len(thumbs) > 0 {
-		if err := json.Unmarshal(thumbs, &a.ThumbnailS3Keys); err != nil {
-			return nil, fmt.Errorf("unmarshal thumbnails: %w", err)
-		}
-	}
-	a.DeletedAt = deleted
-	return &a, nil
 }
 
 // SoftDeleteAllByUserID помечает deleted_at на всех не удалённых аватарках
@@ -250,19 +238,58 @@ func (r *PostgresAvatarRepo) SoftDeleteAllByUserID(ctx context.Context, userID s
 		          thumbnail_s3_keys, upload_status, processing_status,
 		          created_at, updated_at, deleted_at
 	`
-	rows, err := r.pool.Query(ctx, q, userID)
+	tr, err := querySpan(ctx, r.pool, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("query soft delete: %w", err)
 	}
-	defer rows.Close()
+	defer tr.Close()
 
 	var out []*domain.Avatar
-	for rows.Next() {
-		a, err := scanAvatar(rows)
+	for tr.rows.Next() {
+		a, err := scanAvatar(tr.rows)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	return out, tr.rows.Err()
 }
+
+// rowScanner абстрагирует pgx.Row и pgx.Rows для общего сканирования.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanAvatar сканирует одну строку. Если передан scan-callback (для трассировки),
+// он завершает спан; иначе спан уже закрыт вызывающим.
+func scanAvatar(s rowScanner, scanCb ...func(...any) error) (*domain.Avatar, error) {
+	var (
+		a       domain.Avatar
+		thumbs  []byte
+		deleted *time.Time
+	)
+	var err error
+	if len(scanCb) > 0 && scanCb[0] != nil {
+		err = scanCb[0](&a.ID, &a.UserID, &a.FileName, &a.MimeType, &a.SizeBytes, &a.S3Key,
+			&thumbs, &a.UploadStatus, &a.ProcessingStatus,
+			&a.CreatedAt, &a.UpdatedAt, &deleted)
+	} else {
+		err = s.Scan(
+			&a.ID, &a.UserID, &a.FileName, &a.MimeType, &a.SizeBytes, &a.S3Key,
+			&thumbs, &a.UploadStatus, &a.ProcessingStatus,
+			&a.CreatedAt, &a.UpdatedAt, &deleted,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(thumbs) > 0 {
+		if err := json.Unmarshal(thumbs, &a.ThumbnailS3Keys); err != nil {
+			return nil, fmt.Errorf("unmarshal thumbnails: %w", err)
+		}
+	}
+	a.DeletedAt = deleted
+	return &a, nil
+}
+
+// rowScanner абстрагирует pgx.Row и pgx.Rows для общего сканирования.

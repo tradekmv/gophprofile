@@ -1,0 +1,59 @@
+groups:
+  - name: gophprofile-http
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (rate(avatars_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum by (job) (rate(avatars_http_requests_total[5m])), 1)
+            > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: gophprofile
+        annotations:
+          summary: '{{ $labels.job }}: HTTP 5xx > 10% за 5 мин'
+          description: |
+            Сервис {{ $labels.job }} отдаёт больше 10% ошибок 5xx за последние 5 минут.
+
+      - alert: HighResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(avatars_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: critical
+          service: gophprofile
+        annotations:
+          summary: '{{ $labels.job }}: HTTP p95 > 2s'
+          description: |
+            95-й перцентиль латентности HTTP для {{ $labels.job }} превышает 2 секунды.
+
+  - name: gophprofile-worker
+    interval: 30s
+    rules:
+      - alert: WorkerHighFailureRate
+        expr: sum(rate(avatars_worker_failed_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: gophprofile-worker
+        annotations:
+          summary: 'Worker: failures > 0.1/s за 10 мин'
+          description: |
+            Воркер обрабатывает события с ошибками чаще 0.1/с за последние 10 минут.
+
+      - alert: WorkerSlowProcessing
+        expr: |
+          histogram_quantile(0.95,
+            sum by (status, le) (rate(avatars_worker_processing_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: gophprofile-worker
+        annotations:
+          summary: 'Worker: p95 processing > 5s (status={{ $labels.status }})'
+          description: |
+            95-й перцентиль обработки событий воркером превышает 5 секунд.
