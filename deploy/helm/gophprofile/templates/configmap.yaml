@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+data:
+  # Несекретные параметры приложения. Значения берутся из values.yaml.
+  {{- with .Values.config.postgres }}
+  POSTGRES_HOST: {{ .host | quote }}
+  POSTGRES_PORT: {{ .port | quote }}
+  POSTGRES_DB: {{ .database | quote }}
+  POSTGRES_SSLMODE: {{ .sslmode | quote }}
+  POSTGRES_USER: {{ .user | default "gophprofile" | quote }}
+  DB_POOL_MAX_CONNS: {{ $.Values.config.dbPoolMaxConns | quote }}
+  {{- end }}
+  {{- with .Values.config.s3 }}
+  S3_ENDPOINT: {{ .endpoint | quote }}
+  S3_REGION: {{ .region | quote }}
+  S3_BUCKET: {{ .bucket | quote }}
+  S3_USE_SSL: {{ .useSSL | quote }}
+  {{- end }}
+  {{- with .Values.config.kafka }}
+  KAFKA_BROKERS: {{ .brokers | quote }}
+  KAFKA_TOPIC: {{ .topic | quote }}
+  {{- end }}
+  THUMBNAIL_SIZES: {{ .Values.config.thumbnailSizes | quote }}
+  MAX_UPLOAD_SIZE: {{ .Values.config.maxUploadSize | quote }}
+  # Указывает observability-стеку endpoint.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector:4317"
+  OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://otel-collector:4318"
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+  OTEL_SERVICE_NAME: "gophprofile-server"
+  OTEL_TRACES_EXPORTER: "otlp"
+  OTEL_METRICS_EXPORTER: "otlp"
+  # Прямой /metrics endpoint для Prometheus pull.
+  METRICS_HTTP_ADDR: ":9095"

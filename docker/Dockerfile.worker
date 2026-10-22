@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.6
 # ---- build stage ----
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
@@ -11,15 +12,24 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -ldflags="-s -w" -o /out/worker ./cmd/worker
+RUN go build -ldflags="-s -w -buildid=" -o /out/worker ./cmd/worker
 
 # ---- runtime stage ----
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -S app && adduser -S app -G app
+RUN apk add --no-cache ca-certificates tzdata wget && \
+    addgroup -S -g 65534 app && adduser -S -u 65534 -G app app
 
 WORKDIR /app
-COPY --from=builder /out/worker /app/worker
+COPY --from=builder --chown=app:app /out/worker /app/worker
 
-USER app
+# /tmp для readOnlyRootFilesystem=true.
+RUN mkdir -p /tmp && chown app:app /tmp && chmod 1777 /tmp
+
+USER 65534:65534
+EXPOSE 9096
+
+# Healthcheck: проверяет /healthz на metrics-порте.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
+    CMD wget -qO- http://localhost:9096/healthz || exit 1
+
 ENTRYPOINT ["/app/worker"]

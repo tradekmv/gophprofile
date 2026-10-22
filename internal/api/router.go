@@ -13,6 +13,7 @@ type RouterOptions struct {
 	MaxBody         int64
 	ServiceName     string           // для otelhttp.NewHandler (если пусто — трассинг не подключается)
 	BusinessMetrics *BusinessMetrics // если nil — метрики не собираются
+	RateLimiter     *RateLimiter     // если nil — rate limiting отключён
 }
 
 // Router собирает HTTP-роутер с middleware и маршрутами.
@@ -36,6 +37,9 @@ func Router(h *Handlers, opts RouterOptions) http.Handler {
 	}
 	if opts.BusinessMetrics != nil {
 		r.Use(MetricsMiddleware(opts.BusinessMetrics))
+	}
+	if opts.RateLimiter != nil {
+		r.Use(RateLimitMiddleware(opts.RateLimiter))
 	}
 	r.Use(RequestLogger)
 	r.Use(MaxBodyBytes(opts.MaxBody))

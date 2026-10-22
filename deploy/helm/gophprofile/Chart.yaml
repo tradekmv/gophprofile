@@ -1,0 +1,36 @@
+apiVersion: v2
+name: gophprofile
+description: |
+  GophProfile — production-ready Go-сервис аватарок с K8s-наблюдаемостью.
+  Chart включает Deployment, Service, Ingress, ConfigMap, Secret, ServiceAccount,
+  HPA, ServiceMonitor, NetworkPolicy и PodDisruptionBudget.
+type: application
+
+# Версия чарта (semver).
+version: 0.1.0
+
+# Версия приложения, которое деплоит чарт.
+appVersion: "0.2.0"
+
+icon: https://raw.githubusercontent.com/tradekmv/gophprofile/main/docs/logo.png
+
+home: https://github.com/tradekmv/gophprofile
+sources:
+  - https://github.com/tradekmv/gophprofile
+
+keywords:
+  - avatars
+  - go
+  - observability
+  - opentelemetry
+  - kafka
+  - s3
+  - postgres
+
+maintainers:
+  - name: tradekmv
+    email: tradekmv@example.com
+
+annotations:
+  category: Application
+  licenses: MIT

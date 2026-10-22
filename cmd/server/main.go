@@ -103,6 +103,10 @@ func run() error {
 	}
 	svc := services.NewAvatarService(avatarRepo, storage, pub, cfg.BaseURL, sizes, cfg.MaxUploadSize)
 
+	// Rate limiter (sprint 13) — защита от перегрузки.
+	rateLimiter := api.NewRateLimiter(float64(cfg.RateLimitRPS), cfg.RateLimitBurst)
+	defer rateLimiter.Stop()
+
 	metrics := api.NewBusinessMetrics()
 
 	hs := &api.Handlers{
@@ -128,6 +132,7 @@ func run() error {
 		MaxBody:         cfg.MaxUploadSize,
 		ServiceName:     cfg.OTELServiceName,
 		BusinessMetrics: metrics,
+		RateLimiter:     rateLimiter,
 	})
 
 	srv := &http.Server{
