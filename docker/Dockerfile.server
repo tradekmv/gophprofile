@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.6
 # ---- build stage ----
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
@@ -11,23 +12,28 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -ldflags="-s -w" -o /out/server   ./cmd/server && \
-    go build -ldflags="-s -w" -o /out/migrate  ./cmd/migrate
+RUN go build -ldflags="-s -w -buildid=" -o /out/server   ./cmd/server && \
+    go build -ldflags="-s -w -buildid=" -o /out/migrate  ./cmd/migrate
 
 # ---- runtime stage ----
+# distroless-like: alpine минимальный + ca-certs + tzdata.
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && \
-    addgroup -S app && adduser -S app -G app
+    addgroup -S -g 65534 app && adduser -S -u 65534 -G app app
 
 WORKDIR /app
-COPY --from=builder /out/server  /app/server
-COPY --from=builder /out/migrate /app/migrate
-COPY --from=builder /src/web        /app/web
-COPY --from=builder /src/migrations /app/migrations
+COPY --from=builder --chown=app:app /out/server  /app/server
+COPY --from=builder --chown=app:app /out/migrate /app/migrate
+COPY --from=builder --chown=app:app /src/web        /app/web
+COPY --from=builder --chown=app:app /src/migrations /app/migrations
 
-USER app
+# /tmp нужен для readOnlyRootFilesystem=true (volumeMounts в deployment.yaml).
+RUN mkdir -p /tmp && chown app:app /tmp && chmod 1777 /tmp
+
+USER 65534:65534
 EXPOSE 8080
 
+# Healthcheck для standalone запуска (в K8s используется Probe).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 

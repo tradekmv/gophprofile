@@ -1,0 +1,61 @@
+Спасибо за установку {{ .Chart.Name }} v{{ .Chart.Version }} (app v{{ .Chart.AppVersion }}).
+
+Сервис "GophProfile" развёрнут в namespace "{{ .Release.Namespace }}".
+
+== Компоненты релиза ==
+
+* Server (HTTP API + gRPC handlers):
+  - Service: {{ include "gophprofile.fullname" . }}-server:{{ .Values.service.port }}
+  - Metrics:  {{ include "gophprofile.fullname" . }}-server-metrics:9095
+{{- if .Values.worker.enabled }}
+* Worker (Kafka consumer):
+  - Metrics: {{ include "gophprofile.fullname" . }}-worker-metrics:9096
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+* HPA: min={{ .Values.autoscaling.minReplicas }} max={{ .Values.autoscaling.maxReplicas }} (CPU {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%, Memory {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}%)
+{{- end }}
+{{- if .Values.ingress.enabled }}
+* Ingress: https://{{ (index .Values.ingress.hosts 0).host }}
+{{- end }}
+
+== Проверка статуса ==
+
+  kubectl --namespace {{ .Release.Namespace }} get pods -l "app.kubernetes.io/name={{ include "gophprofile.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+  kubectl --namespace {{ .Release.Namespace }} get svc  -l "app.kubernetes.io/name={{ include "gophprofile.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+== Доступ к локальному сервису (port-forward) ==
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "gophprofile.fullname" . }}-server 8080:8080
+  curl http://localhost:8080/health
+
+{{- if .Values.autoscaling.enabled }}
+
+== Масштабирование ==
+
+HPA автоматически масштабирует {{ include "gophprofile.fullname" . }}-server от {{ .Values.autoscaling.minReplicas }} до {{ .Values.autoscaling.maxReplicas }} подов.
+Проверить текущее состояние:
+  kubectl --namespace {{ .Release.Namespace }} get hpa
+{{- end }}
+
+== Удаление ==
+
+  helm uninstall {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+== Настройка секретов в production ==
+
+Helm-чарт НЕ содержит реальных секретов. Перед деплоем в production:
+
+  helm upgrade {{ .Release.Name }} {{ .Chart.Name }} \
+    --set secret.postgresPassword="<ваш-пароль>" \
+    --set secret.s3.accessKey="<ключ>" \
+    --set secret.s3.secretKey="<секрет>" \
+    --set secret.appSigningKey="<hmac-key>"
+
+Рекомендуется использовать HashiCorp Vault или external-secrets-operator.
+
+== Следующие шаги ==
+
+1. Проверьте логи: kubectl logs -l app.kubernetes.io/name={{ include "gophprofile.name" . }}
+2. Откройте Grafana: http://localhost:3000 (admin/admin) — дашборды GophProfile
+3. Откройте Jaeger: http://localhost:16686 — трассировка запросов
+4. Откройте Prometheus: http://localhost:9090 — метрики и алерты

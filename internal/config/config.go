@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -50,6 +51,14 @@ type Config struct {
 	OTELExporterEndpoint string `envconfig:"OTEL_EXPORTER_OTLP_ENDPOINT" default:""`
 	OTELSDKDisabled      bool   `envconfig:"OTEL_SDK_DISABLED"            default:"false"`
 	MetricsHTTPAddr      string `envconfig:"METRICS_HTTP_ADDR"            default:":9095"`
+
+	// Rate limiting (sprint 13)
+	RateLimitRPS   int `envconfig:"RATE_LIMIT_RPS"   default:"100"` // Запросов в секунду на IP; 0 = отключено
+	RateLimitBurst int `envconfig:"RATE_LIMIT_BURST" default:"200"` // Burst размер bucket'а
+
+	// Circuit breaker (sprint 13) — защита от каскадных отказов внешних зависимостей.
+	CBFailureThreshold int           `envconfig:"CB_FAILURE_THRESHOLD" default:"5"` // Подряд ошибок → open
+	CBOpenDuration     time.Duration `envconfig:"CB_OPEN_DURATION"      default:"30s"`
 }
 
 // Load читает конфиг из окружения.

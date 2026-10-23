@@ -1,0 +1,291 @@
+# Default values для gophprofile chart.
+# Переопределяются в values-dev.yaml, values-prod.yaml, либо через --set.
+
+# Количество реплик Deployment.
+replicaCount: 2
+
+image:
+  # Репозиторий и тег образа. Переопределите в values-prod.yaml.
+  repository: ghcr.io/tradekmv/gophprofile-server
+  pullPolicy: IfNotPresent
+  # Если image.tag пустой — используется appVersion из Chart.yaml.
+  tag: ""
+
+imagePullSecrets: []
+# - name: regcred
+
+# Имя сервиса используется в Helm-шаблонах для генерации resource names.
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Создавать ли ServiceAccount.
+  create: true
+  # Сервис не обращается к Kubernetes API, поэтому токен не нужен.
+  # false уменьшает вектор атаки при компрометации контейнера.
+  # В K8s 1.24+ изменился механизм проекции токена, но сам флаг актуален.
+  automountServiceAccountToken: false
+  # Аннотации к ServiceAccount (например, для IRSA).
+  annotations: {}
+  # Имя существующего SA, если create=false.
+  name: ""
+
+# Аннотации и лейблы, которые добавляются к подам.
+podAnnotations: {}
+podLabels: {}
+
+# Параметры безопасности на уровне pod и container.
+podSecurityContext:
+  fsGroup: 65534
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534
+
+# Service: тип и порты.
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+  protocol: TCP
+  name: http
+
+# Ingress — публикация наружу кластера.
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: gophprofile.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: gophprofile-tls
+  #    hosts:
+  #      - gophprofile.example.com
+
+# Resource requests/limits — обязательно для production.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Probes — health checks для K8s.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+  successThreshold: 1
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 0
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 30  # 30 * 5s = 150s max старт
+  successThreshold: 1
+
+# Graceful shutdown — preStop hook + terminationGracePeriod.
+terminationGracePeriodSeconds: 30
+preStopHook:
+  sleepSeconds: 5  # Пауза перед SIGTERM для завершения in-flight запросов.
+
+# HorizontalPodAutoscaler — авто-масштабирование по CPU/RAM.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # Можно добавить custom metrics:
+  # metrics:
+  #   - type: Pods
+  #     pods:
+  #       metric:
+  #         name: http_requests_per_second
+
+# PodDisruptionBudget — защита от одновременного удаления всех подов.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # Или maxUnavailable: 1
+
+# ConfigMap — несекретные параметры приложения.
+config:
+  # Адреса внешних сервисов (имя Helm-релиза, namespace, порт).
+  postgres:
+    host: postgres
+    port: 5432
+    database: gophprofile
+    sslmode: disable
+  s3:
+    endpoint: minio:9000
+    region: us-east-1
+    bucket: avatars
+    useSSL: false
+  kafka:
+    brokers: "kafka:9092"
+    topic: "avatars.events"
+  # Размеры миниатюр (через запятую).
+  thumbnailSizes: "100x100,300x300"
+  # Максимальный размер загружаемого файла (10 MB).
+  maxUploadSize: 10485760
+  # Размер пула подключений к БД.
+  dbPoolMaxConns: 20
+
+# Secret — чувствительные данные. Значения по умолчанию пустые;
+# в production обязательно переопределить через --set или external secrets.
+secret:
+  # Пароль к PostgreSQL.
+  postgresPassword: ""
+  # Учётные данные S3.
+  s3:
+    accessKey: ""
+    secretKey: ""
+  # Auth для Kafka (если включён SASL/SSL).
+  kafka:
+    username: ""
+    password: ""
+  # Секрет для HMAC-подписи.
+  appSigningKey: ""
+
+# NetworkPolicy — ограничение сетевого трафика.
+networkPolicy:
+  enabled: true
+  # Ingress: разрешить трафик от ingress-nginx (порт http) и Prometheus (порт metrics).
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - port: http
+          protocol: TCP
+    # Prometheus scrape идёт напрямую в под на порт metrics (9095),
+    # минуя Service, поэтому нужно отдельное правило.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 9095
+          protocol: TCP
+  # Egress: разрешить доступ к PostgreSQL, S3 (MinIO), Kafka.
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: database
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - port: 9000
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: messaging
+      ports:
+        - port: 9092
+          protocol: TCP
+    # DNS lookup.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+# ServiceMonitor для Prometheus Operator.
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+    # release: prometheus  # если используется kube-prometheus-stack
+  path: /metrics
+  # Дополнительные метки для выбора.
+  selector:
+    app.kubernetes.io/name: gophprofile
+    app.kubernetes.io/component: server
+
+# Worker — отдельный компонент (consumer Kafka).
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/tradekmv/gophprofile-worker
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    labels: {}
+
+# Helm hook для миграций БД при install/upgrade.
+migration:
+  enabled: true
+  image:
+    repository: ghcr.io/tradekmv/gophprofile-migrate
+    pullPolicy: IfNotPresent
+    tag: ""
+  # Database connection — собирается из config + secret.
+  backoffLimit: 3
+
+# Common labels — добавляются во все ресурсы.
+commonLabels: {}
+  # app.kubernetes.io/managed-by: Helm
+  # environment: dev
+
+# Annotations для всех ресурсов.
+commonAnnotations: {}

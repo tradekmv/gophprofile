@@ -1,0 +1,107 @@
+# Production values.
+# Использование:
+#   helm install gophprofile ./deploy/helm/gophprofile \
+#     -f values-prod.yaml \
+#     --set secret.postgresPassword=... --set secret.s3.accessKey=... --set secret.s3.secretKey=...
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/tradekmv/gophprofile-server
+  pullPolicy: IfNotPresent
+  # Тег берётся из appVersion в Chart.yaml (если tag не указан).
+
+imagePullSecrets:
+  - name: regcred  # Создайте заранее: kubectl create secret docker-registry regcred ...
+
+# Production ingress с TLS.
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+  hosts:
+    - host: avatars.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: avatars-tls
+      hosts:
+        - avatars.example.com
+
+# Production HPA: больше реплик, агрессивнее scale-up.
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Production resource limits.
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Тяжёлый PDB — запрещаем evict более 1 пода одновременно.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Включаем NetworkPolicy со строгими правилами.
+networkPolicy:
+  enabled: true
+
+# ServiceMonitor: интеграция с Prometheus Operator.
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  labels:
+    release: kube-prometheus-stack  # match release label Prometheus'а
+
+# Логирование: уровень info.
+env:
+  LOG_LEVEL: "info"
+
+# Vault Agent Injector — включаем в production.
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "gophprofile-server"
+  vault.hashicorp.com/agent-inject-secret-postgres: "secret/data/gophprofile/postgres"
+  vault.hashicorp.com/agent-inject-template-postgres: |
+    {{- with secret "secret/data/gophprofile/postgres" -}}
+    {{ .Data.data.password }}
+    {{- end }}
+
+# Graceful shutdown: больше времени на завершение запросов.
+terminationGracePeriodSeconds: 60
+preStopHook:
+  sleepSeconds: 10
+
+# Worker: больше реплик для production.
+worker:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+# Migration: в production НЕ запускаем автоматически,
+# миграции делаются отдельно через CI/CD.
+migration:
+  enabled: false

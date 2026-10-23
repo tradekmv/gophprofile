@@ -1,0 +1,280 @@
+openapi: 3.0.3
+info:
+  title: GophProfile API
+  description: |
+    HTTP API для сервиса аватарок GophProfile.
+    Поддерживает загрузку, получение, удаление и список аватарок пользователя.
+  version: 0.2.0
+  contact:
+    name: tradekmv
+    url: https://github.com/tradekmv/gophprofile
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Локальный (docker-compose)
+  - url: https://avatars.example.com
+    description: Production (Ingress)
+
+tags:
+  - name: avatars
+    description: Управление аватарками
+  - name: users
+    description: Операции с пользователями
+  - name: health
+    description: Health checks
+
+components:
+  securitySchemes:
+    UserID:
+      type: apiKey
+      in: header
+      name: X-User-ID
+      description: Идентификатор пользователя (аутентификация через заголовок)
+
+  schemas:
+    Avatar:
+      type: object
+      required: [id, user_id, file_name, mime_type, size_bytes, url, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID аватарки
+        user_id:
+          type: string
+          description: ID пользователя
+        file_name:
+          type: string
+          description: Оригинальное имя файла
+        mime_type:
+          type: string
+          example: image/jpeg
+        size_bytes:
+          type: integer
+          format: int64
+        url:
+          type: string
+          format: uri
+          description: Публичный URL для скачивания
+        processing_status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        created_at:
+          type: string
+          format: date-time
+
+    AvatarMetadata:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        user_id: {type: string}
+        file_name: {type: string}
+        mime_type: {type: string}
+        size_bytes: {type: integer, format: int64}
+        processing_status: {type: string, enum: [pending, processing, completed, failed]}
+        thumbnails:
+          type: object
+          additionalProperties: {type: string}
+          example:
+            100x100: avatars/alice/123/100x100.jpg
+            300x300: avatars/alice/123/300x300.jpg
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string, example: postgres}
+              status: {type: string, enum: [ok, down]}
+              latency_ms: {type: number}
+              error: {type: string}
+
+    Error:
+      type: object
+      properties:
+        code: {type: string, example: avatar_not_found}
+        message: {type: string}
+
+security:
+  - UserID: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      security: []
+      description: Проверка состояния всех зависимостей (PostgreSQL, S3, Kafka).
+      responses:
+        '200':
+          description: Все компоненты работают
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HealthResponse'}
+        '503':
+          description: Один или несколько компонентов недоступны
+
+  /api/v1/avatars:
+    post:
+      tags: [avatars]
+      summary: Загрузить аватарку
+      description: |
+        Загружает файл аватарки. Поддерживает JPEG, PNG, GIF.
+        После загрузки запускается асинхронная обработка (генерация миниатюр).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Файл изображения (JPEG/PNG/GIF, до 10 MB)
+      responses:
+        '201':
+          description: Аватарка загружена
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Avatar'}
+        '400':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '413':
+          description: Превышен максимальный размер файла
+
+  /api/v1/avatars/{id}:
+    get:
+      tags: [avatars]
+      summary: Получить аватарку
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+        - in: query
+          name: size
+          schema:
+            type: string
+            enum: [original, 100x100, 300x300]
+            default: original
+      responses:
+        '200':
+          description: Бинарные данные изображения
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+            image/png: {schema: {type: string, format: binary}}
+        '404':
+          description: Аватарка не найдена
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+    delete:
+      tags: [avatars]
+      summary: Удалить аватарку
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Удалено}
+        '403': {description: Чужая аватарка}
+        '404': {description: Не найдено}
+
+  /api/v1/avatars/{id}/metadata:
+    get:
+      tags: [avatars]
+      summary: Получить метаданные
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AvatarMetadata'}
+        '404': {description: Не найдено}
+
+  /api/v1/users/{user_id}/avatar:
+    get:
+      tags: [users]
+      summary: Получить текущую аватарку пользователя
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema: {type: string}
+        - in: query
+          name: size
+          schema: {type: string, enum: [original, 100x100, 300x300]}
+      responses:
+        '200':
+          description: Бинарные данные
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+        '404': {description: Нет аватарки}
+
+    delete:
+      tags: [users]
+      summary: Удалить текущую аватарку
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: Удалено}
+        '404': {description: Нет аватарки}
+
+  /api/v1/users/{user_id}/avatars:
+    get:
+      tags: [users]
+      summary: Список аватарок пользователя
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema: {type: string}
+        - in: query
+          name: limit
+          schema: {type: integer, default: 50, maximum: 200}
+      responses:
+        '200':
+          description: Список
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AvatarMetadata'}
+
+  /metrics:
+    get:
+      tags: [health]
+      summary: Prometheus metrics
+      security: []
+      description: Эндпоинт для Prometheus scrape (формат OpenMetrics).
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain: {schema: {type: string, example: "# HELP avatars_uploads_total ..."}}
