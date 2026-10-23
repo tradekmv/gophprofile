@@ -18,8 +18,8 @@ spec:
       labels:
         {{- include "gophprofile.labels" . | nindent 8 }}
     spec:
+      # OnFailure — K8s перезапустит под при падении контейнера (в рамках backoffLimit).
       restartPolicy: OnFailure
-      restartPolicy: Never
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:

@@ -21,8 +21,10 @@ fullnameOverride: ""
 serviceAccount:
   # Создавать ли ServiceAccount.
   create: true
-  # Автоматически монтировать токен (deprecated в K8s 1.24+, но включаем для совместимости).
-  automountServiceAccountToken: true
+  # Сервис не обращается к Kubernetes API, поэтому токен не нужен.
+  # false уменьшает вектор атаки при компрометации контейнера.
+  # В K8s 1.24+ изменился механизм проекции токена, но сам флаг актуален.
+  automountServiceAccountToken: false
   # Аннотации к ServiceAccount (например, для IRSA).
   annotations: {}
   # Имя существующего SA, если create=false.
@@ -181,7 +183,7 @@ secret:
 # NetworkPolicy — ограничение сетевого трафика.
 networkPolicy:
   enabled: true
-  # Ingress: разрешить трафик от ingress-nginx и Prometheus.
+  # Ingress: разрешить трафик от ingress-nginx (порт http) и Prometheus (порт metrics).
   ingress:
     - from:
         - namespaceSelector:
@@ -189,6 +191,15 @@ networkPolicy:
               name: ingress-nginx
       ports:
         - port: http
+          protocol: TCP
+    # Prometheus scrape идёт напрямую в под на порт metrics (9095),
+    # минуя Service, поэтому нужно отдельное правило.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 9095
           protocol: TCP
   # Egress: разрешить доступ к PostgreSQL, S3 (MinIO), Kafka.
   egress:

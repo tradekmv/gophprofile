@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -106,14 +107,31 @@ func RateLimitMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	}
 }
 
-// clientIP извлекает IP клиента из RemoteAddr.
+// clientIP извлекает IP клиента для rate limiting.
+//
+// За Ingress-контроллером (nginx-ingress) r.RemoteAddr содержит IP пода ingress'а,
+// а не реального клиента. Поэтому приоритет у заголовка X-Real-IP, который
+// ingress-контроллер проставляет из X-Forwarded-For.
+//
+// Доверие к заголовку ограничено самим ingress: напрямую из интернета (в обход
+// ingress) X-Real-IP можно подделать. Поэтому при его отсутствии фолбэк на
+// RemoteAddr, и Service-сеть закрыта NetworkPolicy — прямой доступ к поду снаружи
+// невозможен.
 func clientIP(r *http.Request) string {
-	addr := r.RemoteAddr
-	// Простая обрезка порта (без X-Forwarded-For — для K8s Ingress нужен middleware).
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
+	if v := r.Header.Get("X-Real-IP"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		// XFF = "client, proxy1, proxy2" — берём перв��ю (левейшую) запись.
+		if idx := strings.IndexByte(v, ','); idx > 0 {
+			return strings.TrimSpace(v[:idx])
 		}
+		return strings.TrimSpace(v)
+	}
+	addr := r.RemoteAddr
+	// Обрезка порта (IPv4 "1.2.3.4:5678" или IPv6 "[::1]:5678").
+	if idx := strings.LastIndexByte(addr, ':'); idx > 0 {
+		return addr[:idx]
 	}
 	return addr
 }

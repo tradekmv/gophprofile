@@ -46,6 +46,7 @@ spec:
             - name: metrics
               containerPort: 9096
               protocol: TCP
+          # WorkerMetrics.Handler() обслуживает и /metrics, и /healthz на порту 9096.
           livenessProbe:
             httpGet:
               path: /healthz
